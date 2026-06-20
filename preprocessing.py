@@ -9,13 +9,16 @@ import gymnasium as gym
 # before env_fixed() calls gym.make(...).
 import ale_py  # noqa: F401  -- side-effect: calls register_v5_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
-# FrameStack has moved module homes across gymnasium releases:
-#   0.26 - 0.29: gymnasium.wrappers.frame_stack.FrameStack
-#   1.0+       : gymnasium.wrappers.FrameStackObservation (eagerly re-exported
-#                from gymnasium.wrappers.stateful_observation; the sub-module
-#                is NOT frame_stack_observation -- that path never existed).
-# Try the 1.0+ canonical name first (Kaggle preinstalls gymnasium 1.2.0),
-# then fall back to the 0.x re-export.
+# FrameStack has moved in two ways across gymnasium releases:
+#   (a) Module home:
+#       0.26 - 0.29: gymnasium.wrappers.frame_stack.FrameStack
+#       1.0+       : gymnasium.wrappers.FrameStackObservation (the module
+#                    file was renamed to stateful_observation.py; there is
+#                    NO frame_stack_observation sub-module).
+#   (b) Constructor kwarg:
+#       0.26 - 0.29: num_stack
+#       1.0+       : num_frames
+# Both (a) and (b) are handled below.
 try:
     from gymnasium.wrappers import FrameStackObservation as FrameStack  # type: ignore[attr-defined]  # 1.0+
 except ImportError:
@@ -23,6 +26,21 @@ except ImportError:
         from gymnasium.wrappers import FrameStack  # type: ignore[attr-defined]  # 0.26 - 0.29
     except ImportError:
         from gymnasium.wrappers.frame_stack import FrameStack  # type: ignore[assignment]  # noqa: F401
+
+# Detect which kwarg this gymnasium version expects, then expose a small
+# adapter so the call sites below don't have to care.
+import inspect as _inspect
+_FRAME_STACK_KWARG = (
+    "num_frames"
+    if "num_frames" in _inspect.signature(FrameStack.__init__).parameters
+    else "num_stack"
+)
+
+
+def _frame_stack(env, n: int):
+    """Wrap env with FrameStack, using whichever kwarg name this gymnasium
+    version expects. Centralized so we only inspect once at import time."""
+    return FrameStack(env, **{_FRAME_STACK_KWARG: n})
 
 
 def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, render_mode: str | None = None) -> gym.Env:
@@ -60,7 +78,7 @@ def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, rend
 
   # 2 - FrameStackObservation:
   # stack last 4 frames to give the agent a sense of motion
-  env = FrameStack(env, num_stack=4)
+  env = _frame_stack(env, 4)
 
   if seed is not None:
     env.action_space.seed(seed)
@@ -128,7 +146,7 @@ def env_fixed(env_id: str = "ALE/SpaceInvaders-v5",
        scale_obs = True,
        terminal_on_life_loss = False,
     )
-    env = FrameStack(env, num_stack = 4)
+    env = _frame_stack(env, 4)
     if seed is not None:
        env.action_space.seed(seed)
     return env
