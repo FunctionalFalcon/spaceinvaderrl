@@ -38,7 +38,7 @@ stable-baselines3==2.9.0
 # (1.26.x on Colab, 2.4.x on Kaggle) — pinning causes an ABI mismatch
 # because gymnasium 1.3.0 was compiled against the preinstalled numpy
 # version, not the one we'd force via pip. SB3 2.9.0 supports both.
-opencv-python==4.9.0.80
+opencv-python>=4.10  # 4.9.0.80 was built against numpy 1.x; 4.10+ supports numpy 2.x
 
 # Logging
 tensorboard==2.16.2

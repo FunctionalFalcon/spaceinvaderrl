@@ -1,11 +1,15 @@
 from __future__ import annotations
 import gymnasium as gym
 # shimmy's plugin entry point races against gymnasium's first import on
-# Python 3.12 + numpy 2.x (Kaggle preinstall). Force-register the ALE envs
-# at module load so the "ALE/SpaceInvaders-v5" spec is guaranteed to be
-# present before env_fixed() calls gym.make(...).
-from shimmy.registration import register_gymnasium_envs
-register_gymnasium_envs()
+# Python 3.12 + numpy 2.x. Force-register the ALE envs at module load.
+# We import the registration submodule DIRECTLY (not `import shimmy`) to
+# avoid triggering shimmy/__init__.py's top-level `import gym` side
+# effect, which loads the unmaintained gym 0.26.2 and its numpy-1.x
+# compiled cv2 wrapper — that crashes with AttributeError: _ARRAY_API
+# not found on numpy 2.x.
+import importlib
+_shimmy_reg = importlib.import_module("shimmy.registration")
+_shimmy_reg.register_gymnasium_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from gymnasium.wrappers.frame_stack import FrameStack
 
