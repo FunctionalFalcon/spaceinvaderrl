@@ -1,22 +1,21 @@
 # Pinned for Colab / Kaggle reproducibility.
 # Tested against Python 3.10 (Colab default) and 3.11 (Kaggle default).
-
-# Atari env + ROMs. autorom's accept-rom-license extra auto-accepts the
-# ALE ROM license so gymnasium.make("ALE/SpaceInvaders-v5") doesn't error.
-gymnasium[atari]==0.29.1
-# ale-py is pulled in transitively by shimmy[atari] (a gymnasium extra).
-# shimmy hard-pins ale-py~=0.8.x, so we leave it unpinned here.
 #
-# We do NOT install autorom separately. autorom 0.6.1 re-introduces the
-# same ale-py range through its own [accept-rom-license] extra, which
-# fights with gymnasium[atari]'s shimmy[atari] and triggers a
-# ResolutionImpossible conflict. ale-py 0.8+ already bundles the ROMs,
-# so no autorom is needed.
+# IMPORTANT: Do NOT use `gymnasium[atari]==0.29.1` here. The [atari] extra
+# pulls in `shimmy[atari]` whose pinned ale-py range (~=0.8.x) combined
+# with numpy 1.26 triggers a ResolutionImpossible conflict on Python 3.12.
+# Install shimmy + ale-py explicitly instead, with versions known to
+# coexist. Same behavior, no resolver fight.
+
+# Core gymnasium (no [atari] extra)
+gymnasium==0.29.1
+
+# ALE bridge + ROM-bearing Atari backend (Python 3.12 compatible versions)
+shimmy[atari]==0.2.1
+ale-py==0.8.1
 
 # RL
 stable-baselines3==2.3.0
-# SB3's hard requirement
-# (keep this below the SB3 line so pip resolves a compatible torch first)
 
 # Deep learning.
 # NOTE: We deliberately do NOT pin torch / torchvision here. Colab and Kaggle
@@ -28,7 +27,8 @@ stable-baselines3==2.3.0
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 # Then leave these lines commented or remove them.
 
-# Numerics / vision
+# Numerics / vision. numpy<2 is required for shimmy 0.2.1 + opencv-python 4.9
+# on Python 3.12. numpy 2.x breaks shimmy's C extensions.
 numpy==1.26.4
 opencv-python==4.9.0.80
 
