@@ -200,7 +200,7 @@ def main() -> None:
         return
 
     if choice == "1":
-        train(mode="scratch", total_timesteps=300_000)
+        train(mode="scratch", total_timesteps=500_000)
 
     elif choice == "2":
         checkpoints = [c for c in list_checkpoints() if c[1] >= 0]
@@ -210,7 +210,7 @@ def main() -> None:
             return
         checkpoints.sort(key=lambda x: x[1])
         chosen = prompt_checkpoint(checkpoints)
-        train(mode="resume", resume_path=chosen, total_timesteps=300_000)
+        train(mode="resume", resume_path=chosen, total_timesteps=500_000)
 
     elif choice == "3":
         train(mode="smoketest", total_timesteps=5_000)
