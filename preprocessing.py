@@ -1,5 +1,11 @@
 from __future__ import annotations
 import gymnasium as gym
+# shimmy's plugin entry point races against gymnasium's first import on
+# Python 3.12 + numpy 2.x (Kaggle preinstall). Force-register the ALE envs
+# at module load so the "ALE/SpaceInvaders-v5" spec is guaranteed to be
+# present before env_fixed() calls gym.make(...).
+from shimmy.registration import register_gymnasium_envs
+register_gymnasium_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from gymnasium.wrappers.frame_stack import FrameStack
 
