@@ -9,7 +9,11 @@ import gymnasium as gym
 # before env_fixed() calls gym.make(...).
 import ale_py  # noqa: F401  -- side-effect: calls register_v5_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
-from gymnasium.wrappers.frame_stack import FrameStack
+# gymnasium 1.0 renamed frame_stack -> frame_stack_observation
+try:
+    from gymnasium.wrappers.frame_stack_observation import FrameStackObservation as FrameStack
+except ImportError:
+    from gymnasium.wrappers.frame_stack import FrameStack  # type: ignore[assignment]
 
 
 def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, render_mode: str | None = None) -> gym.Env:
