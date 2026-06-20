@@ -33,8 +33,9 @@ stable-baselines3==2.3.0
 # Pinning to a CUDA-suffixed build (e.g. torch==2.1.0+cu118) breaks pip
 # resolution because those wheels live on pytorch.org, not PyPI.
 
-# Numerics / vision.
-numpy==1.26.4
+# Numerics / vision. Unpinned numpy — pip's resolver picks a version
+# compatible with shimmy 2.x's numpy constraint and SB3's >=1.20.
+numpy>=1.26,<2.0
 opencv-python==4.9.0.80
 
 # Logging
