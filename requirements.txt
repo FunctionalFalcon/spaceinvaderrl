@@ -1,0 +1,31 @@
+# Pinned for Colab / Kaggle reproducibility.
+# Tested against Python 3.10 (Colab default) and 3.11 (Kaggle default).
+
+# Atari env + ROMs. autorom's accept-rom-license extra auto-accepts the
+# ALE ROM license so gymnasium.make("ALE/SpaceInvaders-v5") doesn't error.
+gymnasium[atari]==0.29.1
+ale-py==0.8.1
+autorom[accept-rom-license]==0.6.1
+
+# RL
+stable-baselines3==2.3.0
+# SB3's hard requirement
+# (keep this below the SB3 line so pip resolves a compatible torch first)
+
+# Deep learning — pick the right CUDA build for your runtime.
+# Colab T4 = cu118, Kaggle T4/P100 = cu118 or cu121.
+# If torch fails to import on a new runtime, run:
+#   !pip install torch --index-url https://download.pytorch.org/whl/cu118
+torch==2.1.0+cu118
+torchvision==0.16.0+cu118
+
+# Numerics / vision
+numpy==1.26.4
+opencv-python==4.9.0.80
+
+# Logging
+tensorboard==2.16.2
+
+# Optional: for the record_random.py / play.py video capture path
+imageio==2.34.0
+imageio-ffmpeg==0.4.9
