@@ -1,17 +1,22 @@
 # Pinned for Colab / Kaggle reproducibility.
 # Tested against Python 3.10 (Colab default) and 3.11 (Kaggle default).
 #
-# IMPORTANT: Do NOT use `gymnasium[atari]==0.29.1` here. The [atari] extra
-# pulls in `shimmy[atari]` whose pinned ale-py range (~=0.8.x) combined
-# with numpy 1.26 triggers a ResolutionImpossible conflict on Python 3.12.
-# Install shimmy + ale-py explicitly instead, with versions known to
-# coexist. Same behavior, no resolver fight.
+# IMPORTANT:
+# Do NOT use `gymnasium[atari]==...` or `shimmy[atari]==...` here. Those
+# extras trigger a pip ResolutionImpossible on Python 3.12 + numpy<2
+# because each shimmy version pins a different ale-py range. Install the
+# base packages explicitly with versions that coexist, no extras.
 
 # Core gymnasium (no [atari] extra)
 gymnasium==0.29.1
 
-# ALE bridge + ROM-bearing Atari backend (Python 3.12 compatible versions)
-shimmy[atari]==0.2.1
+# ALE bridge — base shimmy, NOT shimmy[atari]. The [atari] extra is what
+# causes the resolver fight. gymnasium will still find the atari env via
+# the installed ale-py below.
+shimmy==0.2.1
+
+# Atari backend (ALE-Python). Installed separately so pip doesn't try to
+# satisfy a per-shimmy version range via an extra.
 ale-py==0.8.1
 
 # RL
@@ -22,10 +27,6 @@ stable-baselines3==2.3.0
 # both preinstall a working CUDA build, and SB3 only needs torch >= 1.13.
 # Pinning to a CUDA-suffixed build (e.g. torch==2.1.0+cu118) breaks pip
 # resolution because those wheels live on pytorch.org, not PyPI.
-# If you need to install torch yourself (e.g. local Linux box), do it BEFORE
-# pip-installing the rest:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-# Then leave these lines commented or remove them.
 
 # Numerics / vision. numpy<2 is required for shimmy 0.2.1 + opencv-python 4.9
 # on Python 3.12. numpy 2.x breaks shimmy's C extensions.
