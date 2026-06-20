@@ -4,7 +4,7 @@
 # Atari env + ROMs. autorom's accept-rom-license extra auto-accepts the
 # ALE ROM license so gymnasium.make("ALE/SpaceInvaders-v5") doesn't error.
 gymnasium[atari]==0.29.1
-ale-py==0.8.1
+ale-py==0.10.2
 autorom[accept-rom-license]==0.6.1
 
 # RL
