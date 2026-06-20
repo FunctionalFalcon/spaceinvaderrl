@@ -11,16 +11,18 @@ import ale_py  # noqa: F401  -- side-effect: calls register_v5_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 # FrameStack has moved module homes across gymnasium releases:
 #   0.26 - 0.29: gymnasium.wrappers.frame_stack.FrameStack
-#   1.0+       : gymnasium.wrappers.frame_stack_observation.FrameStackObservation
-# Try the canonical re-export first (works on 1.0+), then fall through
-# to the historical module paths so this file works on any version.
+#   1.0+       : gymnasium.wrappers.FrameStackObservation (eagerly re-exported
+#                from gymnasium.wrappers.stateful_observation; the sub-module
+#                is NOT frame_stack_observation -- that path never existed).
+# Try the 1.0+ canonical name first (Kaggle preinstalls gymnasium 1.2.0),
+# then fall back to the 0.x re-export.
 try:
-    from gymnasium.wrappers import FrameStack  # type: ignore[attr-defined]
+    from gymnasium.wrappers import FrameStackObservation as FrameStack  # type: ignore[attr-defined]  # 1.0+
 except ImportError:
     try:
-        from gymnasium.wrappers.frame_stack_observation import FrameStackObservation as FrameStack  # type: ignore[assignment]
+        from gymnasium.wrappers import FrameStack  # type: ignore[attr-defined]  # 0.26 - 0.29
     except ImportError:
-        from gymnasium.wrappers.frame_stack import FrameStack  # type: ignore[assignment]
+        from gymnasium.wrappers.frame_stack import FrameStack  # type: ignore[assignment]  # noqa: F401
 
 
 def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, render_mode: str | None = None) -> gym.Env:
@@ -35,7 +37,7 @@ def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, rend
       render_mode: None | "rgb_array" | "human".
                     "rgb_array" is needed if you want to record videos later.
   """
-    
+
   # raw env - set frameskip = 1 because AP does its own skippping
   env = gym.make(
       env_id,
@@ -62,7 +64,7 @@ def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, rend
 
   if seed is not None:
     env.action_space.seed(seed)
-  
+
 
   return env
 
@@ -72,10 +74,10 @@ def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, rend
   Once the agent picked an action, its stuck in that state for
   like, atleast 'min_repeat'
   After that, the agent can pick a new action
-  
+
   Forces the agent to deliberately pick noop for 'min repeat'
   Prevent the runaway where the agent commits to movement
-  action and cant release 
+  action and cant release
   """
 
 class MinActionRepeat(gym.ActionWrapper):
@@ -90,7 +92,7 @@ class MinActionRepeat(gym.ActionWrapper):
         if self._held_action is None or self._counter >= self.min_repeat:
           self._held_action = action
           self._counter = 0
-        
+
         self._counter += 1
         return self._held_action
 
