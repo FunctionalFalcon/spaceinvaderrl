@@ -25,7 +25,8 @@ shimmy==2.0.1
 ale-py==0.10.2
 
 # RL
-stable-baselines3==2.3.0
+# 2.9.0 supports gymnasium 1.x (2.3.0 pins gymnasium<1.0, hence the ResolutionImpossible).
+stable-baselines3==2.9.0
 
 # Deep learning.
 # NOTE: We deliberately do NOT pin torch / torchvision here. Colab and Kaggle
