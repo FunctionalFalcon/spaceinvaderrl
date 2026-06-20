@@ -5,10 +5,13 @@
 # ALE ROM license so gymnasium.make("ALE/SpaceInvaders-v5") doesn't error.
 gymnasium[atari]==0.29.1
 # ale-py is pulled in transitively by shimmy[atari] (a gymnasium extra).
-# shimmy hard-pins ale-py~=0.8.1, so we leave it unpinned here — pinning a
-# newer ale-py triggers a ResolutionImpossible conflict.
-# ale-py>=0.8.0
-autorom[accept-rom-license]==0.6.1
+# shimmy hard-pins ale-py~=0.8.x, so we leave it unpinned here.
+#
+# We do NOT install autorom separately. autorom 0.6.1 re-introduces the
+# same ale-py range through its own [accept-rom-license] extra, which
+# fights with gymnasium[atari]'s shimmy[atari] and triggers a
+# ResolutionImpossible conflict. ale-py 0.8+ already bundles the ROMs,
+# so no autorom is needed.
 
 # RL
 stable-baselines3==2.3.0
