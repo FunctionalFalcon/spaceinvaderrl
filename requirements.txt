@@ -1,30 +1,27 @@
 # Pinned for Colab / Kaggle reproducibility.
-# Tested against Python 3.10 (Colab default) and Python 3.11 (Kaggle default).
-# Also works on Python 3.12 (current Colab default as of 2026).
+# Tested on Python 3.12 (current Colab default as of 2026).
 #
-# How Atari is wired:
-#   gymnasium.make("ALE/SpaceInvaders-v5", ...) uses the Shimmy ALE env.
-#   gymnasium 0.29.1 does NOT pull shimmy/ale-py as core deps — Atari is
-#   an optional extra. We install shimmy + ale-py directly with versions
-#   known to coexist on Python 3.12.
-#
-# Why these specific versions:
-#   - shimmy 0.x pins ale-py~=0.8.x via the [atari] extra, and ale-py 0.8.x
-#     has no cp312 wheels -> ResolutionImpossible on Python 3.12.
-#   - shimmy 1.3.0 is a universal wheel; its [atari] extra STILL pins
-#     ale-py~=0.8.1, so we install it WITHOUT the [atari] extra.
-#   - ale-py 0.10.2 has cp312 manylinux wheels and is API-compatible
-#     with what gymnasium.make("ALE/SpaceInvaders-v5", ...) needs
+# Why these versions:
+#   - gymnasium 1.x: required by shimmy 2.x. 0.29.1 + shimmy 1.3.0 + ale-py
+#     0.10.2 hit two unfixable issues on Python 3.12: (1) shimmy's plugin
+#     loader races against gymnasium's import and silently fails to register
+#     the ALE envs; (2) shimmy 1.3.0 imports `ale_py.roms.utils`, which was
+#     removed in ale-py 0.10.x. Upgrading the whole stack to the modern
+#     line (gymnasium 1.3.0 / shimmy 2.0.1 / ale-py 0.10.2) resolves both.
+#   - shimmy 2.0.1 is the current release; it auto-registers Atari envs
+#     correctly on import, so no explicit register_gymnasium_envs() call
+#     is needed in user code.
+#   - ale-py 0.10.2 is the first with cp312 manylinux wheels and is
+#     API-compatible with gymnasium.make("ALE/SpaceInvaders-v5", ...)
 #     (frameskip, repeat_action_probability).
 
-# Core gymnasium (no [atari] extra)
-gymnasium==0.29.1
+# Core gymnasium
+gymnasium==1.3.0
 
-# ALE bridge — base shimmy, NOT shimmy[atari]. The [atari] extra on any
-# shimmy version pins ale-py to ~=0.8.x, which has no cp312 wheel.
-shimmy==1.3.0
+# ALE bridge — base shimmy (the [atari] extra is unnecessary on 2.x)
+shimmy==2.0.1
 
-# Atari backend (ALE-Python). 0.10.2 is the first with cp312 manylinux.
+# Atari backend (ALE-Python). 0.10.2 has cp312 manylinux wheels.
 ale-py==0.10.2
 
 # RL

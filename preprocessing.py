@@ -1,13 +1,5 @@
 from __future__ import annotations
 import gymnasium as gym
-# Register the ALE envs ourselves. On Python 3.12 + gymnasium 0.29.1 + shimmy 1.3.0,
-# shimmy's auto-plugin registration races against gymnasium's import and silently
-# fails (see the UserWarning at startup). Calling register_gymnasium_envs()
-# explicitly after gymnasium is fully initialized avoids that race and ensures
-# the "ALE/SpaceInvaders-v5" spec is actually installed before env_fixed() runs.
-import ale_py  # noqa: F401
-from shimmy.registration import register_gymnasium_envs
-register_gymnasium_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from gymnasium.wrappers.frame_stack import FrameStack
 
