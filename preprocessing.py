@@ -1,15 +1,13 @@
 from __future__ import annotations
 import gymnasium as gym
-# shimmy's plugin entry point races against gymnasium's first import on
-# Python 3.12 + numpy 2.x. Force-register the ALE envs at module load.
-# We import the registration submodule DIRECTLY (not `import shimmy`) to
-# avoid triggering shimmy/__init__.py's top-level `import gym` side
-# effect, which loads the unmaintained gym 0.26.2 and its numpy-1.x
-# compiled cv2 wrapper — that crashes with AttributeError: _ARRAY_API
-# not found on numpy 2.x.
-import importlib
-_shimmy_reg = importlib.import_module("shimmy.registration")
-_shimmy_reg.register_gymnasium_envs()
+# The "ALE/SpaceInvaders-v5" namespace is registered by ale_py, NOT by
+# shimmy (shimmy only bridges gym<->gymnasium for the GymV21/V26 envs).
+# ale_py's top-level __init__.py auto-registers on import, but on
+# Python 3.12 + numpy 2.x it can race against gymnasium's first import
+# and silently fail (you see a UserWarning at startup). Force the
+# registration here so the ALE namespace is guaranteed to be populated
+# before env_fixed() calls gym.make(...).
+import ale_py  # noqa: F401  -- side-effect: calls register_v5_envs()
 from gymnasium.wrappers.atari_preprocessing import AtariPreprocessing
 from gymnasium.wrappers.frame_stack import FrameStack
 
