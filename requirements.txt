@@ -12,12 +12,15 @@ stable-baselines3==2.3.0
 # SB3's hard requirement
 # (keep this below the SB3 line so pip resolves a compatible torch first)
 
-# Deep learning — pick the right CUDA build for your runtime.
-# Colab T4 = cu118, Kaggle T4/P100 = cu118 or cu121.
-# If torch fails to import on a new runtime, run:
-#   !pip install torch --index-url https://download.pytorch.org/whl/cu118
-torch==2.1.0+cu118
-torchvision==0.16.0+cu118
+# Deep learning.
+# NOTE: We deliberately do NOT pin torch / torchvision here. Colab and Kaggle
+# both preinstall a working CUDA build, and SB3 only needs torch >= 1.13.
+# Pinning to a CUDA-suffixed build (e.g. torch==2.1.0+cu118) breaks pip
+# resolution because those wheels live on pytorch.org, not PyPI.
+# If you need to install torch yourself (e.g. local Linux box), do it BEFORE
+# pip-installing the rest:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# Then leave these lines commented or remove them.
 
 # Numerics / vision
 numpy==1.26.4
