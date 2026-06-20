@@ -28,19 +28,32 @@ except ImportError:
         from gymnasium.wrappers.frame_stack import FrameStack  # type: ignore[assignment]  # noqa: F401
 
 # Detect which kwarg this gymnasium version expects, then expose a small
-# adapter so the call sites below don't have to care.
+# adapter so the call sites below don't have to care. The kwarg has been
+# renamed three times across gymnasium history:
+#   0.26 - 0.29 : num_stack
+#   1.0 - 1.1   : num_frames
+#   1.2+        : stack_size
+# We accept the first match from this ordered list.
 import inspect as _inspect
-_FRAME_STACK_KWARG = (
-    "num_frames"
-    if "num_frames" in _inspect.signature(FrameStack.__init__).parameters
-    else "num_stack"
+_FRAME_STACK_KWARG_CANDIDATES = ("stack_size", "num_frames", "num_stack")
+_FRAME_STACK_PARAMS = _inspect.signature(FrameStack.__init__).parameters
+_FRAME_STACK_KWARG = next(
+    (k for k in _FRAME_STACK_KWARG_CANDIDATES if k in _FRAME_STACK_PARAMS),
+    None,
 )
+if _FRAME_STACK_KWARG is None:
+    raise ImportError(
+        f"FrameStack (from gymnasium) has an unknown constructor signature; "
+        f"expected one of {_FRAME_STACK_KWARG_CANDIDATES} but got "
+        f"{list(_FRAME_STACK_PARAMS)}. gymnasium version: "
+        f"{getattr(gym, '__version__', 'unknown')}"
+    )
 
 
 def _frame_stack(env, n: int):
     """Wrap env with FrameStack, using whichever kwarg name this gymnasium
     version expects. Centralized so we only inspect once at import time."""
-    return FrameStack(env, **{_FRAME_STACK_KWARG: n})
+    return FrameStack(env, **{_FRAME_STACK_KWARG: n})  # type: ignore[arg-type]  # narrowed by the None-check above
 
 
 def make_env(env_id: str = "ALE/SpaceInvaders-v5", seed: int | None = None, render_mode: str | None = None) -> gym.Env:
