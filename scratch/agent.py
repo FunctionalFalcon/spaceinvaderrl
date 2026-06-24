@@ -65,4 +65,19 @@ class Agent:
 		# max_grad_norm clipping would go here in production.
 		optimizer.step()
 
-		return float(loss.item())
+		# Q-value diagnostics. Detach so we don't grow the autograd graph
+		# just for logging. These are the canonical DQN health signals:
+		# if mean_q blows up, the network is diverging; if it stays near 0
+		# forever, the network isn't learning anything useful.
+		with torch.no_grad():
+			q_for_log = q_pred.detach()
+			mean_q = float(q_for_log.mean().item())
+			max_q = float(q_for_log.max().item())
+			min_q = float(q_for_log.min().item())
+
+		return {
+			"loss": float(loss.item()),
+			"mean_q": mean_q,
+			"max_q": max_q,
+			"min_q": min_q,
+		}

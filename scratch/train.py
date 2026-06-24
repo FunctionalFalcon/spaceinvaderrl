@@ -41,6 +41,42 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _RUNS_DIR = _PROJECT_ROOT / "runs"
 
 
+class _TeeWriter:
+	"""File-like object that writes to both an inner stream and a log file.
+
+	Used to tee every print(...) so the heartbeat survives Kaggle cell-output
+	truncation. `inner` is what we replace on sys.stdout (e.g. the original
+	stdout), `log_fh` is the open file handle for the on-disk log.
+
+	Note: only `write` and `flush` are overridden, which is everything
+	`print(...)` and `sys.stdout` need. Other file ops (e.g. `isatty`) fall
+	back to the inner stream.
+	"""
+	def __init__(self, inner, log_fh):
+		self._inner = inner
+		self._log = log_fh
+
+	def write(self, s):
+		try:
+			self._inner.write(s)
+		except Exception:
+			pass # never let logging kill the training loop
+		try:
+			self._log.write(s)
+		except Exception:
+			pass
+
+	def flush(self):
+		try:
+			self._inner.flush()
+		except Exception:
+			pass
+		try:
+			self._log.flush()
+		except Exception:
+			pass
+
+
 def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description="Train DQN from scratch on Space Invaders.")
 	p.add_argument("--total_steps", type=int, default=None,
@@ -124,6 +160,26 @@ def main() -> int:
 	eval_csv = _RUNS_DIR / "dqn_scratch_eval.csv"
 	eval_csv_exists = eval_csv.exists()
 
+	# Tee stdout so every print() also lands on disk. Kaggle's cell output
+	# truncates beyond ~20MB, so this is the durable copy. Resume-safety:
+	# we append (don't clobber) and prepend a session header so a fresh
+	# run is easy to spot in the file.
+	log_path = _RUNS_DIR / "train.log"
+	_log_fh = open(log_path, "a", encoding="utf-8", buffering=1) # line-buffered
+	_orig_stdout = sys.stdout
+	sys.stdout = _TeeWriter(_orig_stdout, _log_fh)
+	# Header makes the file grep-friendly.
+	print(f"\n{'=' * 60}")
+	print(f"[session] start_time = {time.strftime('%Y-%m-%d %H:%M:%S')}")
+	print(f"[session] pid = {os.getpid()}")
+	print(f"[session] resume = {args.resume or '(none, fresh run)'}")
+	print(f"{'=' * 60}")
+
+	# Per-heartbeat metrics CSV (loss + Q stats). Lives next to eval.csv.
+	# Header is written on first run; resume appends (file already exists).
+	metrics_csv = _RUNS_DIR / "dqn_scratch_metrics.csv"
+	metrics_csv_exists = metrics_csv.exists()
+
 	num_actions = 6
 	q_online = QNetwork(num_actions=num_actions)
 	q_target = QNetwork(num_actions=num_actions)
@@ -160,11 +216,30 @@ def main() -> int:
 			writer = csv.writer(f)
 			writer.writerow(["step", "mean_reward", "std_reward", "wall_time_s"])
 
+	if not metrics_csv_exists:
+		with open(metrics_csv, "w", newline="", encoding="utf-8") as f:
+			writer = csv.writer(f)
+			writer.writerow([
+				"step", "wall_time_s",
+				"loss", "mean_q", "max_q", "min_q",
+				"eps", "last_ep_R", "mean_ep_R", "episodes",
+				"buffer_size", "steps_per_s",
+			])
+
 	obs, _ = env.reset(seed=hp.seed)
 	episode_reward = 0.0
 	episode_count = 0
 	last_print = time.time()
 	start_time = last_print
+	# Rolling-mean reward over the last N episodes. One episode's reward is
+	# noise; an average of the last 10 is the actual signal. `collections.deque`
+	# with maxlen gives O(1) append + auto-eviction.
+	from collections import deque
+	ep_recent = deque(maxlen=10)
+	# Most recent training metrics (loss, Q stats) for the heartbeat. Initialized
+	# to None so the first heartbeat (before any train_step) prints "n/a" instead
+	# of crashing on an unbound variable.
+	last_metrics = None
 	t = start_step - 1 # so the except blocks can read t after a crash
 
 	print("\n[training] starting main loop...")
@@ -182,24 +257,58 @@ def main() -> int:
 
 			if terminated or truncated:
 				episode_count += 1
+				ep_recent.append(float(episode_reward))
 				obs, _ = env.reset()
 				# Heartbeat every ~10s so Kaggle doesn't idle-out.
 				now = time.time()
 				if now - last_print > 10.0:
 					elapsed = now - start_time
 					sps = (t - start_step + 1) / max(elapsed, 1e-6)
+					mean_ep_r = (sum(ep_recent) / len(ep_recent)) if ep_recent else 0.0
+					if last_metrics is not None:
+						loss_s = f"{last_metrics['loss']:.4f}"
+						q_s = (f"q[{last_metrics['min_q']:+.2f},"
+							 f" {last_metrics['mean_q']:+.2f},"
+							 f" {last_metrics['max_q']:+.2f}]")
+					else:
+						loss_s = "n/a"
+						q_s = "q[n/a, n/a, n/a]"
 					print(f" step {t:>7,}/{hp.total_steps:,} | "
 						 f"eps {eps:.3f} | "
-						 f"episodes {episode_count} | "
-						 f"last_ep_R {episode_reward:6.1f} | "
-						 f"buffer {buffer.size:,} | "
-						 f"{sps:.1f} steps/s")
+						 f"loss {loss_s:>7s} | "
+						 f"{q_s} | "
+						 f"ep {episode_count:>5d} | "
+						 f"R_last {episode_reward:6.1f} | "
+						 f"R_mean{len(ep_recent):>2d} {mean_ep_r:6.1f} | "
+						 f"buf {buffer.size:>6,} | "
+						 f"{sps:5.1f} sps")
+					# Append to the metrics CSV so we can plot loss/Q curves
+					# post-hoc. Failures here must not abort training.
+					try:
+						with open(metrics_csv, "a", newline="", encoding="utf-8") as f:
+							writer = csv.writer(f)
+							writer.writerow([
+								t,
+								f"{elapsed:.1f}",
+								"" if last_metrics is None else f"{last_metrics['loss']:.6f}",
+								"" if last_metrics is None else f"{last_metrics['mean_q']:.4f}",
+								"" if last_metrics is None else f"{last_metrics['max_q']:.4f}",
+								"" if last_metrics is None else f"{last_metrics['min_q']:.4f}",
+								f"{eps:.4f}",
+								f"{episode_reward:.2f}",
+								f"{mean_ep_r:.2f}",
+								episode_count,
+								buffer.size,
+								f"{sps:.2f}",
+							])
+					except Exception as csv_err: # noqa: BLE001 - logging must never crash training
+						print(f" [warn] metrics CSV append failed: {csv_err!r}")
 					last_print = now
 				episode_reward = 0.0
 
 			# Learn once we have enough samples and every train_freq steps.
 			if t >= hp.learning_starts and (t % 4 == 0):
-				loss = agent.train_step(q_online, q_target, optimizer, buffer, hp)
+				last_metrics = agent.train_step(q_online, q_target, optimizer, buffer, hp)
 
 			# Refresh target net.
 			if t % hp.target_update == 0:
@@ -234,6 +343,18 @@ def main() -> int:
 			 f"Resume with --resume {crash_path.name}")
 	finally:
 		env.close()
+		# Flush + close the tee'd log handle and restore stdout. Wrapped in
+		# try/except so a logging error at shutdown never masks the real
+		# exit reason (e.g. MemoryError).
+		try:
+			sys.stdout = _orig_stdout
+		except Exception:
+			pass
+		try:
+			_log_fh.flush()
+			_log_fh.close()
+		except Exception:
+			pass
 
 	final_path = _RUNS_DIR / "dqn_scratch_final.pt"
 	save_checkpoint(final_path, hp.total_steps, q_online, optimizer, hp)
