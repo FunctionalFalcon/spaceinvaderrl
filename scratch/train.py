@@ -89,6 +89,10 @@ def parse_args() -> argparse.Namespace:
 				 help="Path to a .pt checkpoint to resume from.")
 	p.add_argument("--seed", type=int, default=None,
 				 help="Override hp.seed.")
+	p.add_argument("--device", type=str, default=None,
+				 choices=["auto", "cpu", "cuda"],
+				 help="Override hp.device. 'auto' picks CUDA when available, "
+					 "else CPU. Default 'auto'.")
 	return p.parse_args()
 
 
@@ -196,12 +200,32 @@ def main() -> int:
 		hp.eval_freq = args.eval_freq
 	if args.seed is not None:
 		hp.seed = args.seed
+	if args.device is not None:
+		hp.device = args.device
 
 	set_seed(hp.seed)
-	device = hp.device if (hp.device == "cpu" or torch.cuda.is_available()) else "cpu"
+	# Resolve device: "auto" picks CUDA when available else CPU. An explicit
+	# "cuda" with no CUDA available falls back to CPU with a loud warning
+	# (rather than crashing later inside .to(cuda) on a missing kernel).
+	cuda_ok = torch.cuda.is_available()
+	if hp.device == "auto":
+		device = "cuda" if cuda_ok else "cpu"
+	elif hp.device == "cuda":
+		if cuda_ok:
+			device = "cuda"
+		else:
+			print(f"[setup] WARNING: --device cuda requested but "
+				 f"torch.cuda.is_available() is False; falling back to CPU.")
+			print(f"[setup] (Check: right torch build? GPU enabled in kernel? "
+				 f"`nvidia-smi` works?)")
+			device = "cpu"
+	else:
+		device = "cpu"
 	q_online.to(device)
 	q_target.to(device)
-	print(f"[setup] device = {device}")
+	print(f"[setup] device = {device} (requested={hp.device}, cuda_available={cuda_ok})")
+	if device == "cuda":
+		print(f"[setup] GPU: {torch.cuda.get_device_name(0)}")
 	print(f"[setup] total_steps = {hp.total_steps:,}")
 	print(f"[setup] save_freq = {hp.save_freq:,}, eval_freq = {hp.eval_freq:,}")
 	print(f"[setup] train_freq = 4 (hardcoded to match paper)")

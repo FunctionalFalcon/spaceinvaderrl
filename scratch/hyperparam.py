@@ -31,5 +31,5 @@ class Hyperparameters:
  eps_frac: float = 0.15
  max_grad_norm: float = 10.0
  min_repeat: int = 3
- device: str = "cpu"
+ device: str = "auto" # "auto" | "cpu" | "cuda". Resolved at train time.
  num_actions: int = 6
