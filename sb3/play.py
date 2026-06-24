@@ -18,7 +18,7 @@ import sys
 from stable_baselines3 import DQN
 from gymnasium.wrappers import RecordVideo
 
-from preprocessing import make_env
+from shared.preprocessing import make_env
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))

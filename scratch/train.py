@@ -27,15 +27,15 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dqn.network import QNetwork
-from dqn.replay_buffer import ReplayBuffer
-from dqn.agent import Agent
-from dqn.hyperparam import Hyperparameters
-from dqn.evaluate import greedy_action
-from preprocessing import env_fixed
+from scratch.network import QNetwork
+from scratch.replay_buffer import ReplayBuffer
+from scratch.agent import Agent
+from scratch.hyperparam import Hyperparameters
+from scratch.evaluate import greedy_action
+from shared.preprocessing import env_fixed
 
 
-# Project root = parent of dqn/. Resolve relative paths from here so the
+# Project root = parent of scratch/. Resolve relative paths from here so the
 # script works regardless of the CWD it was launched from.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _RUNS_DIR = _PROJECT_ROOT / "runs"

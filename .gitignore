@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Training artifacts
+runs/
+checkpoints/
+checkpoints_fixed/
+logs/
+logs_fixed/
+*.pt
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / tooling
+.gitnexus
+.idea/
+.vscode/
+
+# Kaggle scratch (kept on disk, not tracked)
+_diag_video.py
+_rebuild_videos_zip.py
+train_kaggle.py

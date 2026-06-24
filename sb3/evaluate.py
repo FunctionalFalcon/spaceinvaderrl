@@ -17,7 +17,7 @@ import sys
 from stable_baselines3 import DQN
 from stable_baselines3.common.evaluation import evaluate_policy
 
-from preprocessing import make_env
+from shared.preprocessing import make_env
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))

@@ -28,12 +28,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from dqn.network import QNetwork
-from dqn.hyperparam import Hyperparameters
-from preprocessing import env_fixed
+from scratch.network import QNetwork
+from scratch.hyperparam import Hyperparameters
+from shared.preprocessing import env_fixed
 
 
-# Resolve relative paths from the project root (parent of dqn/).
+# Resolve relative paths from the project root (parent of scratch/).
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -69,7 +69,7 @@ def load_checkpoint(path, device):
 def greedy_action(q_net, state, device):
 	"""argmax over Q-values for a single observation. No epsilon, no_grad."""
 	with torch.no_grad():
-		s = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+		s = torch.as_tensor(np.array(state, dtype=np.float32), device=device).unsqueeze(0)
 		q_values = q_net(s) # (1, |A|)
 	return int(q_values.argmax(dim=1).item())
 

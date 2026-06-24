@@ -9,7 +9,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
-from preprocessing import make_env
+from shared.preprocessing import make_env
 
 
 # Resolve paths relative to this script (not the launch CWD)

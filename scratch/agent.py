@@ -3,9 +3,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from dqn.network import QNetwork
-from dqn.replay_buffer import ReplayBuffer
-from dqn.hyperparam import Hyperparameters
+from scratch.network import QNetwork
+from scratch.replay_buffer import ReplayBuffer
+from scratch.hyperparam import Hyperparameters
 
 
 class Agent:

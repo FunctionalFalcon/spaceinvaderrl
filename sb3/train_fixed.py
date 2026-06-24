@@ -18,7 +18,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
 
-from preprocessing import env_fixed
+from shared.preprocessing import env_fixed
 
 
 # Resolve paths relative to this script (not the launch CWD)
@@ -218,16 +218,44 @@ def train(
         verbose=1,
     )
 
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=checkpoint_cb,
-        tb_log_name="dqn_fixed_full",
-        progress_bar=True,
-    )
+    # --- Crash-safe training: try to save the model before the kernel dies.
+    # MemoryError covers Python OOMs; RuntimeError covers CUDA OOMs (which
+    # surface from PyTorch as RuntimeError, not MemoryError). The "crash save"
+    # is written next to the regular checkpoint dir so it's findable after
+    # a bad session. Local runs benefit from this too (Ctrl+C, laptop sleep,
+    # a stray OOM) -- not just Kaggle.
+    crash_save_path = os.path.join(ckpt_dir, "dqn_fixed_crashsave")
+
+    try:
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=checkpoint_cb,
+            tb_log_name="dqn_fixed_full",
+            progress_bar=True,
+        )
+    except (MemoryError, RuntimeError):
+        print(f"\n[train_fixed] Training crashed; saving to {crash_save_path}...")
+        import traceback
+        traceback.print_exc()
+        try:
+            model.save(crash_save_path)
+            print(f"[train_fixed] Saved {crash_save_path}.zip")
+        except Exception as save_err:  # noqa: BLE001 - cannot raise here
+            print(f"[train_fixed] WARNING: crash save failed: {save_err!r}")
+        raise
+    except KeyboardInterrupt:
+        print(f"\n[train_fixed] Interrupted; saving to {crash_save_path}...")
+        try:
+            model.save(crash_save_path)
+            print(f"[train_fixed] Saved {crash_save_path}.zip")
+        except Exception as save_err:  # noqa: BLE001 - cannot raise here
+            print(f"[train_fixed] WARNING: crash save failed: {save_err!r}")
+        # Don't re-raise KeyboardInterrupt; let env close cleanly below.
+    finally:
+        env.close()
 
     final_path = os.path.join(ckpt_dir, "dqn_fixed_final")
     model.save(final_path)
-    env.close()
     print(f"Done. Saved {final_path}.zip")
 
 
