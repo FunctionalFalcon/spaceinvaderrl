@@ -12,11 +12,23 @@ class Agent:
 
 	def select_action(self, state, q, eps, num_actions):
 		"""eps-greedy: with probability eps take a random action (explore),
-		otherwise take the action with the highest predicted Q-value (exploit)."""
+		otherwise take the action with the highest predicted Q-value (exploit).
+
+		Device handling: we read the device off the network's first parameter
+		so the input tensor lives on the same device as `q`'s weights. Without
+		this, training on CUDA raises:
+		 RuntimeError: Input type (torch.FloatTensor) and weight type
+		 (torch.cuda.FloatTensor) should be the same
+		because np.array() returns a CPU tensor and q.to('cuda') lives on GPU.
+		"""
 		if random.random() < eps:
 			return random.randrange(num_actions)
+		# next(...) on parameters() yields the first Parameter; .device gives
+		# e.g. device(type='cuda', index=0) or device(type='cpu').
+		q_device = next(q.parameters()).device
 		with torch.no_grad():
-			s = torch.as_tensor(np.array(state, dtype=np.float32)).unsqueeze(0)
+			s = torch.as_tensor(np.array(state, dtype=np.float32),
+								device=q_device).unsqueeze(0)
 		return int(q(s).argmax(dim=1).item())
 
 	def epsilon_at(self, t, hp):
@@ -36,6 +48,18 @@ class Agent:
 	):
 		# Sample a minibatch of (s, a, r, s_next, done) from the replay buffer.
 		s, a, r, s_next, done = buffer.sample(hp.batch_size)
+		# ReplayBuffer.sample() returns CPU tensors (it never knows what device
+		# the network lives on). Move the batch to q_online's device so the
+		# forward pass and loss compute on the same hardware. Without this,
+		# CUDA training raises "Input type (torch.FloatTensor) and weight type
+		# (torch.cuda.FloatTensor) should be the same" the first time we try
+		# to learn (after learning_starts steps).
+		q_device = next(q_online.parameters()).device
+		s = s.to(q_device)
+		a = a.to(q_device)
+		r = r.to(q_device)
+		s_next = s_next.to(q_device)
+		done = done.to(q_device)
 
 		# === TD target ===
 		# Use the frozen target net to value s_next. No gradient flows through
