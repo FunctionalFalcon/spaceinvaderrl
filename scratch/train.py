@@ -22,6 +22,7 @@ import os
 import random
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,56 @@ class _TeeWriter:
 			pass
 
 
+def write_rescue_zip(runs_dir: Path, out_path: Path, keep_recent: int = 5) -> int:
+	"""Write a compact rescue zip to `out_path`.
+
+	The zip is the on-disk safety net for Kaggle sessions: it's the one
+	artifact that survives notebook re-clone (it lives at /kaggle/working/
+	runs.zip, outside the repo dir that Cell 1 rmtree's). We keep only the
+	N most recent step checkpoints (~20MB each) plus final.pt / crashsave.pt
+	if they exist, plus the CSVs and train.log. So a 2M-step run produces a
+	zip with ~5 * 20MB = 100MB of checkpoints plus a few KB of CSVs - small
+	enough to be cheap, large enough to be a full resume point.
+
+	Returns the number of files written. Errors are swallowed so a
+	zip failure never aborts training.
+	"""
+	try:
+		# Collect step checkpoints, sort by step number descending.
+		step_ckpts = sorted(
+			(p for p in runs_dir.glob("dqn_scratch_step_*.pt")),
+			key=lambda p: int(p.stem.split("_")[-1]),
+			reverse=True,
+		)
+		step_ckpts = step_ckpts[:keep_recent]
+
+		# Always-include artifacts if they exist.
+		always = []
+		for name in ("dqn_scratch_final.pt", "dqn_scratch_crashsave.pt"):
+			p = runs_dir / name
+			if p.exists():
+				always.append(p)
+		csvs = []
+		for name in ("dqn_scratch_eval.csv", "dqn_scratch_metrics.csv", "train.log"):
+			p = runs_dir / name
+			if p.exists():
+				csvs.append(p)
+
+		# Write to a tmp path first, then atomic-rename so a partially-written
+		# zip never replaces a good one.
+		tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+		with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED) as zf:
+			# No compression on .pt files: they're already random-ish floats
+			# so deflate barely shrinks them, and STORED is much faster.
+			for p in (*step_ckpts, *always, *csvs):
+				zf.write(p, arcname=f"spaceinvaderrl/runs/{p.name}")
+		tmp.replace(out_path)
+		return len(step_ckpts) + len(always) + len(csvs)
+	except Exception as e:  # noqa: BLE001 - logging must never crash training
+		print(f" [warn] rescue zip write failed: {e!r}")
+		return 0
+
+
 def parse_args() -> argparse.Namespace:
 	p = argparse.ArgumentParser(description="Train DQN from scratch on Space Invaders.")
 	p.add_argument("--total_steps", type=int, default=None,
@@ -93,6 +144,12 @@ def parse_args() -> argparse.Namespace:
 				 choices=["auto", "cpu", "cuda"],
 				 help="Override hp.device. 'auto' picks CUDA when available, "
 					 "else CPU. Default 'auto'.")
+	p.add_argument("--auto-zip-freq", type=int, default=None,
+				 help="Override hp.auto_zip_freq. Steps between rescue-zip writes. "
+					 "0 disables auto-zip. Default 200_000.")
+	p.add_argument("--auto-zip-keep", type=int, default=None,
+				 help="Override hp.auto_zip_keep. Recent step checkpoints "
+					 "kept in the zip. Default 5.")
 	return p.parse_args()
 
 
@@ -202,6 +259,10 @@ def main() -> int:
 		hp.seed = args.seed
 	if args.device is not None:
 		hp.device = args.device
+	if args.auto_zip_freq is not None:
+		hp.auto_zip_freq = args.auto_zip_freq
+	if args.auto_zip_keep is not None:
+		hp.auto_zip_keep = args.auto_zip_keep
 
 	set_seed(hp.seed)
 	# Resolve device: "auto" picks CUDA when available else CPU. An explicit
@@ -230,6 +291,7 @@ def main() -> int:
 	print(f"[setup] save_freq = {hp.save_freq:,}, eval_freq = {hp.eval_freq:,}")
 	print(f"[setup] train_freq = 4 (hardcoded to match paper)")
 	print(f"[setup] min_repeat = {hp.min_repeat} (MinActionRepeat wrapper applied via env_fixed)")
+	print(f"[setup] auto_zip_freq = {hp.auto_zip_freq:,} (rescue zip every N steps, 0=off)")
 
 	env = env_fixed(seed=hp.seed, render_mode=None, min_repeat=hp.min_repeat)
 	agent = Agent()
@@ -344,6 +406,19 @@ def main() -> int:
 				save_checkpoint(ckpt_path, t, q_online, optimizer, hp)
 				print(f" [ckpt] saved {ckpt_path.name}")
 
+			# Periodic rescue zip. Writes /kaggle/working/runs.zip with the
+			# N most recent step checkpoints + final/crashsave + CSVs + log.
+			# Lives OUTSIDE the repo dir so it survives Cell 1 re-clone.
+			# Default off (0); enable with hp.auto_zip_freq > 0.
+			if hp.auto_zip_freq > 0 and t % hp.auto_zip_freq == 0:
+				rescue_zip = _PROJECT_ROOT.parent / "runs.zip"
+				n_files = write_rescue_zip(_RUNS_DIR, rescue_zip,
+										   keep_recent=hp.auto_zip_keep)
+				if n_files > 0:
+					print(f" [rescue] wrote {rescue_zip.name} "
+						 f"({n_files} files, "
+						 f"{rescue_zip.stat().st_size / 1e6:.1f} MB)")
+
 			# Periodic greedy eval (and CSV append).
 			if t % hp.eval_freq == 0:
 				mean_r, std_r = run_greedy_eval(env, q_online, hp.eval_episodes,
@@ -365,6 +440,16 @@ def main() -> int:
 		save_checkpoint(crash_path, t, q_online, optimizer, hp)
 		print(f"\n[interrupt] saved {crash_path}. "
 			 f"Resume with --resume {crash_path.name}")
+		# Refresh the rescue zip so the on-disk backup matches the just-saved
+		# crashsave state. Critical for "I stopped the cell, lost my work"
+		# scenarios like the one that wiped a 1M-step run last time.
+		if hp.auto_zip_freq > 0:
+			rescue_zip = _PROJECT_ROOT.parent / "runs.zip"
+			n_files = write_rescue_zip(_RUNS_DIR, rescue_zip,
+									   keep_recent=hp.auto_zip_keep)
+			if n_files > 0:
+				print(f"[interrupt] refreshed {rescue_zip.name} "
+					 f"({rescue_zip.stat().st_size / 1e6:.1f} MB)")
 	finally:
 		env.close()
 		# Flush + close the tee'd log handle and restore stdout. Wrapped in
@@ -386,6 +471,14 @@ def main() -> int:
 	print(f"\n[done] saved {final_path.name}")
 	print(f"[done] total wall time: {total_time/60:.1f} min "
 		 f"({(hp.total_steps - start_step + 1)/max(total_time,1e-6):.1f} steps/s)")
+	# Final rescue zip at the natural end of training.
+	if hp.auto_zip_freq > 0:
+		rescue_zip = _PROJECT_ROOT.parent / "runs.zip"
+		n_files = write_rescue_zip(_RUNS_DIR, rescue_zip,
+								   keep_recent=hp.auto_zip_keep)
+		if n_files > 0:
+			print(f"[done] wrote {rescue_zip.name} "
+				 f"({rescue_zip.stat().st_size / 1e6:.1f} MB)")
 	return 0
 
 

@@ -33,3 +33,5 @@ class Hyperparameters:
  min_repeat: int = 3
  device: str = "auto" # "auto" | "cpu" | "cuda". Resolved at train time.
  num_actions: int = 6
+ auto_zip_freq: int = 200_000 # Steps between rescue-zip writes (0 = disabled).
+ auto_zip_keep: int = 5 # How many recent step checkpoints to include in zip.
