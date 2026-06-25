@@ -61,14 +61,19 @@ class Agent:
 		s_next = s_next.to(q_device)
 		done = done.to(q_device)
 
-		# === TD target ===
-		# Use the frozen target net to value s_next. No gradient flows through
-		# here because we are using the target as a fixed answer key, not as
-		# something to train on.
+		# === TD target (Double DQN) ===
+		# Standard DQN uses the target net for both action selection and
+		# action valuation, which causes a systematic overestimation bias
+		# (same optimistic net "picks" and "values" -> bias compounds).
+		# Double DQN (van Hasselt et al. 2015) decouples the two: the online
+		# net picks the action, the target net values it. This reduces the
+		# maximization bias and empirically yields ~30-50% higher mean
+		# reward on Atari at the same training budget.
 		with torch.no_grad():
-			q_next_all = q_target(s_next) # (B, |A|)
-			a_next = q_next_all.argmax(dim=1, keepdim=True) # (B, 1)
-			q_next = q_next_all.gather(1, a_next).squeeze(1) # (B,)
+			# ONLINE picks: which action looks best in s_next?
+			a_next = q_online(s_next).argmax(dim=1, keepdim=True) # (B, 1)
+			# TARGET values: how good is that action under the frozen net?
+			q_next = q_target(s_next).gather(1, a_next).squeeze(1) # (B,)
 
 		# Bellman target: r + gamma * Q(s_next, a*) when not done, else just r.
 		# (1 - done) zeros out the bootstrapped future term on terminal steps.
@@ -86,7 +91,13 @@ class Agent:
 		# === Optimize ===
 		optimizer.zero_grad()
 		loss.backward()
-		# max_grad_norm clipping would go here in production.
+		# Gradient clipping: cap the L2 norm of the gradient at hp.max_grad_norm
+		# (default 10). One outlier reward spike (e.g. clearing an entire wave)
+		# used to produce a huge gradient that could blow up the network weights
+		# and require a full restart. Clipping scales the gradient down so the
+		# worst-case update magnitude is bounded. Mnih 2015 used this exact
+		# value (10.0); it's the standard DQN recipe.
+		torch.nn.utils.clip_grad_norm_(q_online.parameters(), hp.max_grad_norm)
 		optimizer.step()
 
 		# Q-value diagnostics. Detach so we don't grow the autograd graph
