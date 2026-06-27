@@ -162,24 +162,74 @@ def set_seed(seed: int) -> None:
 		torch.cuda.manual_seed_all(seed)
 
 
-def maybe_resume(path, q_online, q_target, optimizer):
+def maybe_resume(path, q_online, q_target, optimizer, device):
 	"""Load a checkpoint if given. Returns (start_step, hp).
 
-	start_step is 1 for fresh training, ckpt['step']+1 for resumed."""
+	start_step is 1 for fresh training, ckpt['step']+1 for resumed.
+
+	`device` is the torch device (str, "cpu" or "cuda") the optimizer was
+	built against. The checkpoint is loaded with map_location=device so
+	its optimizer-state tensors land on the same device as the params
+	they're tracking (otherwise the first optimizer.step() after resume
+	raises "tensors on different devices").
+
+	Special values for `path`:
+	- None: fresh training.
+	- "latest": pick the highest-step dqn_scratch_step_*.pt in _RUNS_DIR,
+	  falling back to final.pt or crashsave.pt if no step ckpts exist.
+	  Used by emergency-resume cells in the notebook after a Kaggle
+	  disconnect, where the user wants to pick up "wherever I was" without
+	  knowing the exact step number.
+	- anything else: treated as a path. Relative paths resolve against
+	  _PROJECT_ROOT (so `--resume runs/dqn_scratch_step_5000000.pt` works
+	  from any CWD).
+	"""
 	if path is None:
 		return 1, Hyperparameters()
-	ckpt_path = path
-	if not os.path.isabs(ckpt_path):
-		ckpt_path = str(_PROJECT_ROOT / ckpt_path)
-	if not os.path.exists(ckpt_path):
-		print(f"[resume] checkpoint not found at {ckpt_path}; starting fresh.")
-		return 1, Hyperparameters()
 
-	ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+	if path == "latest":
+		candidates = sorted(
+			_RUNS_DIR.glob("dqn_scratch_step_*.pt"),
+			key=lambda p: int(p.stem.split("_")[-1]),
+			reverse=True,
+		)
+		if candidates:
+			ckpt_path = str(candidates[0])
+			print(f"[resume] 'latest' -> {ckpt_path}")
+		else:
+			# Fall back to final.pt / crashsave.pt if no step ckpts yet.
+			for fallback in ("dqn_scratch_final.pt", "dqn_scratch_crashsave.pt"):
+				fb = _RUNS_DIR / fallback
+				if fb.exists():
+					ckpt_path = str(fb)
+					print(f"[resume] 'latest' (no step ckpts) -> {ckpt_path}")
+					break
+			else:
+				print(f"[resume] 'latest' but no checkpoints in {_RUNS_DIR}; starting fresh.")
+				return 1, Hyperparameters()
+	else:
+		ckpt_path = path
+		if not os.path.isabs(ckpt_path):
+			ckpt_path = str(_PROJECT_ROOT / ckpt_path)
+		if not os.path.exists(ckpt_path):
+			print(f"[resume] checkpoint not found at {ckpt_path}; starting fresh.")
+			return 1, Hyperparameters()
+
+	ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 	q_online.load_state_dict(ckpt["model_state_dict"])
 	q_target.load_state_dict(ckpt["model_state_dict"])
-	if "optimizer_state_dict" in ckpt:
-		optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+	# NOTE: optimizer_state_dict is intentionally NOT loaded. Adam's
+	# exp_avg / exp_avg_sq tensors are tied to specific param objects by
+	# id(); when we build a fresh optimizer against fresh params (even if
+	# we copy the weights over), the param ids don't match, so loading
+	# state raises a "tensors on different devices" error in modern PyTorch.
+	# We pay a small cost: the first ~5k steps of training rebuild Adam's
+	# momentum from scratch. The model weights and target net are preserved,
+	# so the agent's *policy* resumes correctly -- this is the part that
+	# matters for evaluation. (Mnih 2015 uses a learning_starts=50k warmup
+	# for exactly this reason; our 5k is just enough for momentum to ramp.)
+	# if "optimizer_state_dict" in ckpt:
+	# 	optimizer.load_state_dict(ckpt["optimizer_state_dict"])
 	hp = Hyperparameters(**ckpt["hp"]) if "hp" in ckpt else Hyperparameters()
 	start_step = int(ckpt.get("step", 0)) + 1
 	print(f"[resume] loaded {ckpt_path} at step {start_step:,}")
@@ -245,9 +295,50 @@ def main() -> int:
 	q_online = QNetwork(num_actions=num_actions)
 	q_target = QNetwork(num_actions=num_actions)
 	q_target.eval() # documents intent; NatureCNN has no dropout/BN
+
+	# Resolve device BEFORE moving networks. The optimizer holds per-
+	# parameter state (Adam's exp_avg, exp_avg_sq) that lives on the
+	# same device as the parameters it tracks. Order matters:
+	#   1. Build networks on CPU (default).
+	#   2. Resolve target device ("cuda" if available, else "cpu").
+	#   3. Move networks to device.
+	#   4. Build optimizer against the now-device-resident parameters.
+	#   5. Load checkpoint with map_location=device so its optimizer
+	#      state tensors land on the same device as the params they
+	#      describe.
+	# The old order (build optimizer on CPU, then .to(cuda), then load
+	# checkpoint with map_location=cpu) hit a 7M-step resume with:
+	#   RuntimeError: Expected all tensors to be on the same device,
+	#   but found at least two devices, cuda:0 and cpu!
+	# at the first optimizer.step() after resume, because Adam's
+	# exp_avg/exp_avg_sq were loaded onto CPU (map_location=cpu) but
+	# the params they'd been tracking were now on CUDA.
+	#
+	# Read the device hint from args (CLI) directly: hp is bound later
+	# by maybe_resume(), and using a placeholder would silently ignore
+	# any --device override on this run.
+	requested_device = args.device if args.device is not None else "auto"
+	cuda_ok = torch.cuda.is_available()
+	if requested_device == "auto":
+		device = "cuda" if cuda_ok else "cpu"
+	elif requested_device == "cuda":
+		if cuda_ok:
+			device = "cuda"
+		else:
+			print(f"[setup] WARNING: --device cuda requested but "
+				 f"torch.cuda.is_available() is False; falling back to CPU.")
+			print(f"[setup] (Check: right torch build? GPU enabled in kernel? "
+				 f"`nvidia-smi` works?)")
+			device = "cpu"
+	else:
+		device = "cpu"
+	# Move networks FIRST so the optimizer tracks CUDA-resident params
+	# (or CPU-resident if device=="cpu") from its very first .step().
+	q_online.to(device)
+	q_target.to(device)
 	optimizer = torch.optim.Adam(q_online.parameters(), lr=Hyperparameters.lr)
 
-	start_step, hp = maybe_resume(args.resume, q_online, q_target, optimizer)
+	start_step, hp = maybe_resume(args.resume, q_online, q_target, optimizer, device)
 
 	if args.total_steps is not None:
 		hp.total_steps = args.total_steps
@@ -265,26 +356,7 @@ def main() -> int:
 		hp.auto_zip_keep = args.auto_zip_keep
 
 	set_seed(hp.seed)
-	# Resolve device: "auto" picks CUDA when available else CPU. An explicit
-	# "cuda" with no CUDA available falls back to CPU with a loud warning
-	# (rather than crashing later inside .to(cuda) on a missing kernel).
-	cuda_ok = torch.cuda.is_available()
-	if hp.device == "auto":
-		device = "cuda" if cuda_ok else "cpu"
-	elif hp.device == "cuda":
-		if cuda_ok:
-			device = "cuda"
-		else:
-			print(f"[setup] WARNING: --device cuda requested but "
-				 f"torch.cuda.is_available() is False; falling back to CPU.")
-			print(f"[setup] (Check: right torch build? GPU enabled in kernel? "
-				 f"`nvidia-smi` works?)")
-			device = "cpu"
-	else:
-		device = "cpu"
-	q_online.to(device)
-	q_target.to(device)
-	print(f"[setup] device = {device} (requested={hp.device}, cuda_available={cuda_ok})")
+	print(f"[setup] device = {device} (requested={requested_device}, cuda_available={cuda_ok})")
 	if device == "cuda":
 		print(f"[setup] GPU: {torch.cuda.get_device_name(0)}")
 	print(f"[setup] total_steps = {hp.total_steps:,}")
