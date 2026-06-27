@@ -9,6 +9,16 @@ import argparse
 import os
 import sys
 
+# When this file is run as `python sb3/record_random.py`, Python adds the
+# script's directory (sb3/) to sys.path[0], not the repo root. The
+# `from shared.preprocessing import make_env` below needs the repo root on
+# sys.path. Insert the parent of this script's directory so absolute
+# imports of `shared.X` and `scratch.X` resolve from any CWD.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import imageio.v2 as imageio
 
 from shared.preprocessing import make_env
