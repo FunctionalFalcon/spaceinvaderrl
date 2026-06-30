@@ -28,8 +28,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scratch.network import QNetwork
-from scratch.replay_buffer import ReplayBuffer
+from scratch.network import QNetwork, QNetworkLegacy
+from scratch.replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
 from scratch.agent import Agent
 from scratch.hyperparam import Hyperparameters
 from scratch.evaluate import greedy_action
@@ -150,6 +150,14 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--auto-zip-keep", type=int, default=None,
 				 help="Override hp.auto_zip_keep. Recent step checkpoints "
 					 "kept in the zip. Default 5.")
+	p.add_argument("--prio-alpha", type=float, default=None,
+				 help="Override hp.prio_alpha. Prioritization exponent (0=uniform, 1=pure TD-error). Default 0.6.")
+	p.add_argument("--prio-beta", type=float, default=None,
+				 help="Override hp.prio_beta. Initial IS weight exponent. Default 0.4.")
+	p.add_argument("--use-legacy-network", action="store_true",
+				 help="Use QNetworkLegacy (standard DQN) instead of Dueling+Noisy.")
+	p.add_argument("--use-uniform-buffer", action="store_true",
+				 help="Use uniform ReplayBuffer instead of PrioritizedReplayBuffer.")
 	return p.parse_args()
 
 
@@ -292,8 +300,14 @@ def main() -> int:
 	metrics_csv_exists = metrics_csv.exists()
 
 	num_actions = 6
-	q_online = QNetwork(num_actions=num_actions)
-	q_target = QNetwork(num_actions=num_actions)
+	if hp.use_legacy_network:
+		q_online = QNetworkLegacy(num_actions=num_actions)
+		q_target = QNetworkLegacy(num_actions=num_actions)
+		print("[setup] Using QNetworkLegacy (standard DQN, no dueling/noisy)")
+	else:
+		q_online = QNetwork(num_actions=num_actions)
+		q_target = QNetwork(num_actions=num_actions)
+		print("[setup] Using QNetwork (Dueling + Noisy Nets)")
 	q_target.eval() # documents intent; NatureCNN has no dropout/BN
 
 	# Resolve device BEFORE moving networks. The optimizer holds per-
@@ -354,6 +368,14 @@ def main() -> int:
 		hp.auto_zip_freq = args.auto_zip_freq
 	if args.auto_zip_keep is not None:
 		hp.auto_zip_keep = args.auto_zip_keep
+	if args.prio_alpha is not None:
+		hp.prio_alpha = args.prio_alpha
+	if args.prio_beta is not None:
+		hp.prio_beta = args.prio_beta
+	if args.use_legacy_network:
+		hp.use_legacy_network = True
+	if args.use_uniform_buffer:
+		hp.use_prioritized = False
 
 	set_seed(hp.seed)
 	print(f"[setup] device = {device} (requested={requested_device}, cuda_available={cuda_ok})")
@@ -364,10 +386,26 @@ def main() -> int:
 	print(f"[setup] train_freq = 4 (hardcoded to match paper)")
 	print(f"[setup] min_repeat = {hp.min_repeat} (MinActionRepeat wrapper applied via env_fixed)")
 	print(f"[setup] auto_zip_freq = {hp.auto_zip_freq:,} (rescue zip every N steps, 0=off)")
+	if hp.use_prioritized:
+		print(f"[setup] prio_alpha = {hp.prio_alpha}, beta = {hp.prio_beta}→{hp.prio_beta_end} "
+			  f"(IS correction ramps over first {hp.prio_beta_frac:.0%} of training)")
 
 	env = env_fixed(seed=hp.seed, render_mode=None, min_repeat=hp.min_repeat)
 	agent = Agent()
-	buffer = ReplayBuffer(hp.buffer_size, obs_shape=(4, 84, 84))
+	if hp.use_prioritized:
+		buffer = PrioritizedReplayBuffer(
+			capacity=hp.buffer_size,
+			obs_shape=(4, 84, 84),
+			alpha=hp.prio_alpha,
+			beta=hp.prio_beta,
+			beta_end=hp.prio_beta_end,
+			beta_frac=hp.prio_beta_frac,
+		)
+		print(f"[setup] Using PrioritizedReplayBuffer "
+			  f"(alpha={hp.prio_alpha}, beta={hp.prio_beta}→{hp.prio_beta_end})")
+	else:
+		buffer = ReplayBuffer(hp.buffer_size, obs_shape=(4, 84, 84))
+		print("[setup] Using uniform ReplayBuffer")
 
 	if not eval_csv_exists:
 		with open(eval_csv, "w", newline="", encoding="utf-8") as f:
@@ -466,7 +504,8 @@ def main() -> int:
 
 			# Learn once we have enough samples and every train_freq steps.
 			if t >= hp.learning_starts and (t % 4 == 0):
-				last_metrics = agent.train_step(q_online, q_target, optimizer, buffer, hp)
+				last_metrics = agent.train_step(q_online, q_target, optimizer, buffer, hp, step=t)
+				agent.post_train_step(buffer, last_metrics)
 
 			# Refresh target net.
 			if t % hp.target_update == 0:

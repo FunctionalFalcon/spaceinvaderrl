@@ -135,60 +135,79 @@ The reasoning: target network stability is most important in early training when
 
 ## What we did NOT change (matches paper)
 
-- Network architecture: NatureCNN (3 conv + 2 FC, no batch norm).
-- Replay buffer type: uniform random sampling.
-- ε-greedy exploration (vs. noisy nets). Note: ε-greedy decays away after 15% of training, leaving a nearly deterministic policy.
-- 1-step TD target (vs. n-step).
+- 1-step TD target (vs. n-step — future work).
 - Huber loss.
 - Gradient clipping at 10.
 - Target network architecture (same as online).
 - Adam optimizer (paper used RMSProp; Adam is the modern equivalent).
+- `terminal_on_life_loss = False` (matches paper).
+- `repeat_action_probability = 0.25` (matches paper).
+- `frame_skip = 4` and `frame_stack = 4` (matches paper).
+- No reward clipping (matches our SB3 baseline).
 
-**One exception:** We upgraded to Double DQN (DDQN), which the original paper didn't have. This was implemented as part of the from-scratch code and reduces overestimation bias.
+**Improvements over Mnih 2015:**
+
+We upgraded from vanilla DQN toward Rainbow (Hessel et al., 2017):
+
+1. **Double DQN (DDQN)** — online net picks action, target net provides value. Reduces overestimation bias.
+2. **Dueling networks** — V(s) + A(s,a) head instead of direct Q(s,a). Better action-value estimates.
+3. **Noisy Nets** — learned weight noise replaces ε-greedy. State-dependent exploration that never decays.
+4. **Prioritized Replay** — smart sampling by |TD error| via SumTree. 2-5× sample efficiency improvement.
+
+Remaining Rainbow techniques (not yet implemented):
+- **N-step Returns** — bootstrap over N steps instead of 1.
+- **Categorical DQN (C51)** — learn the full return distribution.
 
 ---
 
-## What we'd add in v2 (future work)
+## Implementation details
 
-These improvements together form **Rainbow** (Hessel et al. 2017), the canonical DQN improvement combining six techniques. Our from-scratch DQN already has one of them.
+### Dueling + Noisy QNetwork
+- File: [network.py](scratch/network.py)
+- ~6.5M parameters (vs 1.7M for standard DQN)
+- All FC layers use `NoisyLinear` (Fortunato et al., 2017)
+- Dueling aggregation: `Q = V + A - mean(A)` (Wang et al., 2016)
+- `reset_noise()` called after each training step
 
-### ✓ Already implemented
-- **Double DQN (DDQN)** — implemented in [agent.py:64-76](scratch/agent.py#L64-L76). Decouples action selection (online net) from action evaluation (target net) to reduce overestimation bias. The online net picks the best action, the target net provides the value.
+### Prioritized Replay
+- File: [replay_buffer.py](scratch/replay_buffer.py)
+- `SumTree`: O(log N) prioritized sampling and priority updates
+- Priority: `P(i) ∝ |TD_error|^alpha` (alpha=0.6)
+- IS weights: `w_i ∝ (N * P(i))^(-beta)`, beta ramps from 0.4 → 1.0
+- New transitions get `max_priority` so they're replayed early
 
-### Planned improvements
-
-- **Dueling networks** — splits the Q-value head into `V(s)` and `A(s, a)` with `Q = V + A - mean(A)`. Helps when some actions are irrelevant in most states. ~15 lines of code change in `network.py`. Expected 10-30% reward gain on Space Invaders.
-
-- **Noisy Nets** — replaces ε-greedy exploration with learned weight noise. Every forward pass produces different noise, giving state-dependent exploration that never decays. Removes the need for ε-schedule entirely.
-
-- **Prioritized Replay** — samples transitions with probability proportional to |TD error| instead of uniformly. Uses a SumTree data structure for O(log N) operations. Expected 2-5× sample efficiency improvement.
-
-- **N-step Returns** — bootstrap over N steps instead of 1. Helps propagate delayed rewards (like alien kills) back faster. ~20 lines in `train_step`.
-
-The full Rainbow combination can achieve ~3× the score of vanilla DQN on Space Invaders at the same training time.
+### Hyperparameters for v2 run
+```
+total_steps: 5,000,000 (longer for Rainbow-level improvements)
+buffer_size: 100,000 (larger buffer for prioritized replay)
+prio_alpha: 0.6
+prio_beta: 0.4 → 1.0 (IS correction ramps over first 50% of training)
+```
 
 ---
 
 ## Summary
 
-We changed exactly 5 things vs. the paper + our SB3 baseline:
-- `min_repeat`: 4 → 3 (UX fix — prevents edge crashes while maintaining responsiveness)
-- `eps_frac`: 0.10 → 0.15 (more exploration)
-- `device`: cpu → cuda (speed)
-- `target_update`: 10000 → 1000 (faster convergence at slight stability cost)
-- `buffer_size`: 1M → 20k (memory constraint)
+**Architecture changes from vanilla DQN:**
+- `QNetwork` → Dueling + Noisy (3 improvements combined)
+- `ReplayBuffer` → `PrioritizedReplayBuffer` (SumTree-backed)
+- `agent.train_step()` → adds IS weights to loss, updates priorities
 
-We also added one Rainbow improvement ahead of schedule:
-- **DDQN**: online net picks action, target net provides value (reduces overestimation)
+**Hyperparameter changes:**
+- `total_steps`: 2M → 5M
+- `buffer_size`: 20k → 100k
+- `save_freq`: 50k → 100k
+- `eval_episodes`: 5 → 10
+- `min_repeat`: 4 → 3 (preserved)
+- `eps_frac`: 0.10 → 0.15 (preserved; Noisy Nets handle exploration)
+- `device`: cpu → cuda (preserved)
 
-Everything else matches either Mnih 2015 or our SB3 baseline.
+**Previous results (vanilla DQN, 8M steps):**
+- Best eval: 697 ± 232 at step 8M
+- 2.7× the SB3 baseline
 
-**8M-step training results (Kaggle T4):**
-- Best eval reward: 697 ± 232 at step 8M
-- Survival time: ~18-30 seconds (vs ~13s at 1.2M steps)
-- This is 2.7× the SB3 baseline (257.5 ± 104.9)
-
-**Next improvements planned (v2):**
-- Dueling DQN (~15 lines, separates V(s) from A(s,a))
-- Noisy Nets (~30 lines, replaces ε-greedy)
-- Prioritized Replay (~80 lines, smart sampling)
+**Expected with Rainbow-level improvements:**
+- 2-5× sample efficiency from Prioritized Replay
+- Better exploration throughout training from Noisy Nets
+- More accurate Q-values from Dueling
+- Target: 1000+ eval reward on Space Invaders
