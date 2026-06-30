@@ -17,7 +17,7 @@ The plan file (`dqn/PLAN.md`) has the build order. This file has the *why*.
 
 ### Change 1: `min_repeat = 3` (was 4 in our SB3 run, N/A in paper)
 
-**What:** The `MinActionRepeat` wrapper in `preprocessing.py` was set to `min_repeat=4` in our SB3 run. We are reducing to `min_repeat=2` for the from-scratch version.
+**What:** The `MinActionRepeat` wrapper in `preprocessing.py` was set to `min_repeat=4` in our SB3 run. We use `min_repeat=3` for the from-scratch version.
 
 **Why:** With `min_repeat=4`, each action persists for ~666ms (4 agent-frames × 4 env-frames × ~42ms per env frame). For a 60Hz game this is sluggish. The video evaluation showed the agent jiggling at edges and standing awkwardly — both symptoms of a policy that cannot change direction quickly enough to dodge bullets.
 
@@ -178,7 +178,7 @@ Remaining Rainbow techniques (not yet implemented):
 
 ### Hyperparameters for v2 run
 ```
-total_steps: 5,000,000 (longer for Rainbow-level improvements)
+total_steps: 8,000,000
 buffer_size: 100,000 (larger buffer for prioritized replay)
 prio_alpha: 0.6
 prio_beta: 0.4 → 1.0 (IS correction ramps over first 50% of training)
@@ -194,7 +194,7 @@ prio_beta: 0.4 → 1.0 (IS correction ramps over first 50% of training)
 - `agent.train_step()` → adds IS weights to loss, updates priorities
 
 **Hyperparameter changes:**
-- `total_steps`: 2M → 5M
+- `total_steps`: 2M → 8M
 - `buffer_size`: 20k → 100k
 - `save_freq`: 50k → 100k
 - `eval_episodes`: 5 → 10
