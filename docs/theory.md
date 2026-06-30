@@ -322,7 +322,116 @@ DQN needs ~200M frames to reach human level on Atari. A human learns in minutes.
 - **Distributional Q-learning** — learn the *full distribution* of returns, not just the mean
 - **Noisy nets** — learn exploration as a function of the weights
 
-### 11.4 No planning
+### 11.4 Overestimation bias (DQN → DDQN)
+
+Standard DQN uses `max_{a'} Q(s', a'; θ⁻)` to pick the next action *and* value it. If the target net slightly overestimates some Q-values (which it does, due to function-approximation noise), the max operator **amplifies** the bias. The Q-values grow unboundedly over training.
+
+**Double DQN (DDQN)** decouples action selection from action evaluation: use the *online* net to pick the next action, the *target* net to value it:
+
+```
+DDQN target:  y = r + γ · Q(s', argmax_{a'} Q(s', a'; θ); θ⁻)
+                              ^^^^^^^^         ^
+                              online net picks  target net values
+```
+
+This is already implemented in our from-scratch code ([agent.py:64-76](scratch/agent.py#L64-L76)). The online net's `argmax` selects the action it believes is best, but the target net's value for that action provides a more stable bootstrap signal. This reduces overestimation by ~30-50% and leads to more accurate Q-values.
+
+### 11.5 The separation problem (DQN → Dueling DQN)
+
+Standard DQN outputs one Q-value per action: `Q(s, a)`. This conflates two conceptually different questions:
+
+1. **How good is it to be in state `s`?** (regardless of what action you pick)
+2. **How much better is action `a` than the other actions?**
+
+**Dueling DQN** separates these explicitly using the identity:
+
+```
+Q(s, a) = V(s) + A(s, a) − mean_a[A(s, a)]
+```
+
+Where:
+- `V(s)` = **Value** of state `s` — how good is this situation on average?
+- `A(s, a)` = **Advantage** of action `a` — how much better is `a` than average?
+- The `− mean(A)` term centers the advantages so that `mean(Q) = V(s)`
+
+The network learns two separate heads:
+
+```
+Conv layers → features
+             ├── Value stream: Linear(512 → 1)    → V(s)
+             └── Advantage stream: Linear(512 → 6) → A(s, a)
+             
+Output: Q(s, a) = V(s) + A(s, a) − mean(A)
+```
+
+**Why this helps in Space Invaders:** The game has long stretches where the agent should SHOOT (no immediate threat) alternating with short bursts where the agent must DODGE (beam incoming). Standard DQN's single Q-head has to represent both "when to shoot" and "when to dodge" in the same weight space. Dueling lets the network learn:
+
+- `V(s)` = "how safe am I right now?" (learns from ALL states)
+- `A(s, a)` = "is SHOOT or DODGE the right call?" (learns from action comparisons)
+
+This separation of concerns accelerates learning, especially when some actions are rarely useful.
+
+### 11.6 Exploration that never stops (ε-greedy → Noisy Nets)
+
+**The ε-greedy problem:** ε decays to 0.01 over the first 15% of training and stays there forever. The agent becomes nearly deterministic — it always picks `argmax Q`. This means it never discovers that a previously bad-looking action became good.
+
+**Noisy Nets fix:** Instead of using ε to inject randomness, the network's weights themselves contain noise that is learned alongside the rest of the network.
+
+Each weight `w` is: `w = w_fixed + w_noise`, where `w_noise` is sampled from a factorized Gaussian distribution:
+
+```
+w_noise[i,j] = (σ_i / √k) · ε_j
+ε ~ N(0, 1), σ = learned parameter, k = fan-in
+```
+
+Key properties:
+- **Every forward pass produces different noise** — natural exploration without ε
+- **The noise is differentiable** — the network learns to reduce noise on important weights (σ → 0) and keep it where uncertainty is high
+- **Exploration is state-dependent** — the agent explores more in unfamiliar states (high noise) and less in familiar ones
+
+**Why it's better than ε-greedy:**
+- ε-greedy explores uniformly across all states — it adds noise even when the policy is already good
+- Noisy nets explore more where Q-values are uncertain and less where they're confident
+- The agent never becomes fully deterministic — exploration persists throughout training
+
+### 11.7 Learning from the most surprising moments (Uniform → Prioritized Replay)
+
+**The uniform sampling problem:** The replay buffer stores all transitions equally. When sampling a batch, every transition has the same probability of being chosen. But some transitions teach the agent more than others.
+
+A transition where the agent correctly predicted Q(s,a) has a tiny TD error — the gradient is near zero, the network learns almost nothing. A transition where the agent was wildly wrong (TD error = 50) is "surprising" — it has a large gradient and teaches the network something important.
+
+Uniform sampling wastes batch capacity on boring transitions.
+
+**Prioritized Replay fix:** Sample transitions with probability proportional to their TD error:
+
+```
+P(i) ∝ |TD_error_i|^α
+```
+
+Where α (default 0.6) controls how strongly we prioritize surprising transitions.
+
+**Implementation using a SumTree:** Naively computing priorities after every update is expensive. The standard approach (Schaul et al. 2015) uses a **SumTree** — a binary tree data structure that supports:
+- Sampling by priority in O(log N) time
+- Updating priorities in O(log N) time
+
+**Sampling bias correction:** Always replaying high-TD-error transitions causes the agent to overfit to "surprising" states. We compensate using **importance sampling weights** `w_i = (P(i)^(−β))` in the loss function, which downweights over-sampled transitions.
+
+**Expected impact:** 2-5× sample efficiency improvement on Space Invaders. The agent learns faster because every batch contains more teaching signal — particularly helpful for learning death-approaching states (beam appearing) which have large TD errors.
+
+### 11.8 The full Rainbow combination
+
+These four techniques — DDQN, Dueling, Noisy Nets, and Prioritized Replay — are four of the six techniques in Rainbow (Hessel et al. 2017). The full Rainbow combines all six:
+
+1. **DDQN** ✓ (already implemented)
+2. **Dueling DQN** — separates V(s) from A(s,a)
+3. **Noisy Nets** — replaces ε-greedy
+4. **Prioritized Replay** — smart sampling by TD error
+5. **N-step Returns** — bootstrap over N steps instead of 1
+6. **Categorical DQN (C51)** — learns the full distribution of returns
+
+On Space Invaders, Rainbow achieved **~3× the score of vanilla DQN** at the same training time. Our from-scratch DQN already has DDQN. Adding Dueling is the next planned improvement.
+
+### 11.9 No planning
 
 DQN is a **reactive** policy: `a = argmax Q(s, a)`. It cannot think ahead. For games that require planning (chess, Go, StarCraft), you need tree search (MCTS) on top of the value function — that's AlphaZero.
 
@@ -338,9 +447,9 @@ DQN is a **reactive** policy: `a = argmax Q(s, a)`. It cannot think ahead. For g
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
-│  y_i = r_i + γ · max_{a'} Q(s_i', a'; θ⁻)                        │
-│        ↑↑↑↑                                                      │
-│        TD target (uses frozen target net θ⁻)                     │
+│  y_i = r_i + γ · Q(s_i', argmax_{a'} Q(s_i', a'; θ); θ⁻)       │
+│              ↑           ↑^^^^^^^         ↑                       │
+│              DDQN target  online picks  target values              │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
@@ -407,3 +516,12 @@ DQN is a **reactive** policy: `a = argmax Q(s, a)`. It cannot think ahead. For g
 | **Huber / smooth_l1** | Same thing, two names. PyTorch calls it `smooth_l1_loss`. |
 | **Determinism** | At eval time, the agent picks `argmax Q(s, a)` (no ε-noise). Makes the eval number reproducible. |
 | **SPS** | Steps per second. Our CPU run hit 73 SPS. |
+| **DDQN** | Double DQN. Decouples action selection (online net) from action evaluation (target net) to reduce overestimation bias. |
+| **Dueling DQN** | Architecture that learns V(s) and A(s,a) separately, then combines them as Q = V + A − mean(A). Helps when some actions are rarely useful. |
+| **Noisy Nets** | Learns exploration noise as part of the network weights. Replaces ε-greedy with state-dependent, differentiable exploration. |
+| **Prioritized Replay** | Samples transitions from replay buffer with probability proportional to |TD error|, not uniformly. Requires importance sampling weights to correct bias. |
+| **SumTree** | Binary tree data structure used to implement prioritized replay efficiently. Supports O(log N) sampling and priority updates. |
+| **Rainbow** | Combination of six DQN improvements (DDQN, Dueling, Noisy Nets, Prioritized Replay, N-step, C51). State-of-the-art DQN as of 2017. |
+| **NatureCNN** | The CNN architecture from Mnih 2015: 32→64→64 convs, FC 512, output |A|. Used in both our SB3 baseline and from-scratch implementation. |
+| **Value V(s)** | The value of being in state s, regardless of action. Part of Dueling DQN's decomposition: Q(s,a) = V(s) + A(s,a). |
+| **Advantage A(s,a)** | How much better action a is than the average action in state s. Part of Dueling DQN: Q(s,a) = V(s) + A(s,a). |
