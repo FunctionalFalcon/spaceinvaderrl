@@ -75,7 +75,13 @@ class SumTree:
             # Uniform offset within segment i of batch_size
             p = np.random.uniform(0, total)
             tree_idx = self._find(1, p)
-            indices[i] = tree_idx - self._offset
+            # Clamp: tree indices beyond the valid leaf range (padded region)
+            # can survive _find's `idx < _offset` guard. Force them into the
+            # last real slot so buffer indexing never overflows.
+            max_valid_leaf = min(self._size, self.capacity) - 1
+            leaf_idx = min(tree_idx - self._offset, max_valid_leaf)
+            tree_idx = self._offset + leaf_idx
+            indices[i] = leaf_idx
             priorities[i] = self._tree[tree_idx]
             tree_indices[i] = tree_idx
         return indices, priorities, tree_indices
@@ -124,6 +130,12 @@ class SumTree:
             else:
                 p -= self._tree[left]
                 idx = left + 1
+        # Hard cap: _find can wander into padded leaves (index >= _offset + capacity)
+        # when the tree is right-heavy and the right branch extends beyond real slots.
+        # Force any overshoot back to the last valid leaf so buffer indexing is safe.
+        max_leaf = self._offset + min(self._size, self.capacity) - 1
+        if idx > max_leaf:
+            idx = max_leaf
         return idx
 
 
