@@ -300,7 +300,7 @@ def main() -> int:
 	metrics_csv_exists = metrics_csv.exists()
 
 	num_actions = 6
-	if hp.use_legacy_network:
+	if args.use_legacy_network:
 		q_online = QNetworkLegacy(num_actions=num_actions)
 		q_target = QNetworkLegacy(num_actions=num_actions)
 		print("[setup] Using QNetworkLegacy (standard DQN, no dueling/noisy)")
