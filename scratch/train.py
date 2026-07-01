@@ -441,8 +441,13 @@ def main() -> int:
 	print("\n[training] starting main loop...")
 	try:
 		for t in range(start_step, hp.total_steps + 1):
-			eps = agent.epsilon_at(t, hp)
-			action = agent.select_action(obs, q_online, eps, num_actions)
+			if args.use_legacy_network:
+				# ε-greedy for legacy QNetwork
+				eps = agent.epsilon_at(t, hp)
+				action = agent.select_action_eps(obs, q_online, eps, num_actions)
+			else:
+				# Noisy Nets handle exploration — no epsilon needed
+				action = agent.select_action(obs, q_online)
 			next_obs, reward, terminated, truncated, _ = env.step(action)
 			# IMPORTANT: only mark done on natural termination. Truncation
 			# (time-limit) still allows the bootstrap term to apply.
