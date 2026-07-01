@@ -16,99 +16,78 @@ import torch
 # Total storage: 2 * capacity - 1 nodes.
 
 class SumTree:
-    """Binary tree for prioritized sampling. All operations are O(log N)."""
+    """Binary tree for prioritized sampling. All operations are O(log N).
+
+    Uses a perfect binary tree padded to the next power of 2. Leaves occupy
+    indices [_offset, _offset + capacity - 1]. The rest of the tree
+    (indices [1, _offset-1]) stores partial sums for O(1) total retrieval
+    and O(log N) search.
+    """
 
     def __init__(self, capacity: int):
-        # Cap at next power of 2 for clean tree layout
         self.capacity = capacity
-        self.tree = np.zeros(2 * capacity, dtype=np.float32)
-        # Map leaf index → tree node index
-        self._leaf_offset = capacity
-        self._size = 0  # must be initialized before add() is called
+        # Pad to next power of 2 >= capacity. A perfect binary tree with N
+        # leaves has exactly N-1 internal nodes (indices 0..N-1), but heap
+        # child indexing (left=2*i, right=2*i+1) needs N slots for the leaves
+        # as well, so total slots = 2*N. For capacity=4: padded=4, slots=8.
+        # For capacity=1: padded=1, slots=2.
+        self._padded = 1
+        while self._padded < capacity:
+            self._padded <<= 1
+        # _tree[0] is unused (kept as 0) so child indexing works cleanly.
+        # _tree[1.._padded-1] are internal sum nodes.
+        # _tree[_padded..2*_padded-1] are the leaves.
+        self._tree = np.zeros(2 * self._padded, dtype=np.float32)
+        self._offset = self._padded  # first leaf index
+        self._size = 0
 
-    def _total(self) -> float:
-        """Root holds the sum of all priorities."""
-        return self.tree[0]
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def add(self, priority: float) -> int:
-        """Add a new entry with given priority. Returns the leaf index (0..capacity-1)."""
-        idx = self._leaf_offset + self.size
-        self.tree[idx] = priority
-        self._propagate(idx)
-        self.size = min(self.size + 1, self.capacity)
-        return idx - self._leaf_offset
+        """Add a new entry. Returns leaf index (0..capacity-1).
+
+        When the ring buffer cycles, overwrites the oldest leaf.
+        """
+        leaf_idx = self._size % self.capacity
+        tree_idx = self._offset + leaf_idx
+        self._tree[tree_idx] = priority
+        self._propagate(tree_idx)
+        self._size = min(self._size + 1, self.capacity)
+        return leaf_idx
 
     def sample(self, batch_size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Sample `batch_size` indices proportional to their priority.
-
-        Returns:
-            indices: leaf indices (0..capacity-1), length batch_size
-            priorities: the priority value at each sampled index, length batch_size
-            tree_indices: internal tree node indices, length batch_size
-        """
+        """Sample `batch_size` leaf indices proportional to their priority."""
         indices = np.empty(batch_size, dtype=np.int64)
         priorities = np.empty(batch_size, dtype=np.float32)
         tree_indices = np.empty(batch_size, dtype=np.int64)
 
-        # Segment the [0, total] range into batch_size equal chunks
-        # p = segment_start + uniform(0, segment_size)
-        total = self._total()
-        if total == 0:
-            # All priorities are zero — fall back to uniform sampling
-            uniform_indices = np.random.randint(0, self.size, size=batch_size)
-            for i, u_idx in enumerate(uniform_indices):
-                tree_idx = self._leaf_offset + u_idx
-                indices[i] = u_idx
-                priorities[i] = self.tree[tree_idx]
-                tree_indices[i] = tree_idx
+        total = self._tree[1]  # root at index 1
+        if total == 0 or self._size == 0:
+            rng = np.random.randint(0, max(1, self._size), size=batch_size)
+            for i, r in enumerate(rng):
+                ti = self._offset + r
+                indices[i] = r
+                priorities[i] = self._tree[ti]
+                tree_indices[i] = ti
             return indices, priorities, tree_indices
 
-        segment_size = total / batch_size
         for i in range(batch_size):
-            p = segment_size * i + np.random.uniform(0, segment_size)
-            tree_idx = self._retrieve(0, p)
-            leaf_idx = tree_idx - self._leaf_offset
-            indices[i] = leaf_idx
-            priorities[i] = self.tree[tree_idx]
+            # Uniform offset within segment i of batch_size
+            p = np.random.uniform(0, total)
+            tree_idx = self._find(1, p)
+            indices[i] = tree_idx - self._offset
+            priorities[i] = self._tree[tree_idx]
             tree_indices[i] = tree_idx
         return indices, priorities, tree_indices
 
     def update(self, tree_indices: np.ndarray, priorities: np.ndarray) -> None:
-        """Update multiple leaf priorities. O(k log N) for k updates."""
+        """Update leaf priorities. O(k log N) for k updates."""
         for ti, p in zip(tree_indices, priorities):
-            if p <= 0:
-                p = 1e-6  # clamp to avoid zero-probability
-            self.tree[ti] = p
+            self._tree[ti] = max(1e-10, float(p))
             self._propagate(ti)
 
-    def __repr__(self):
-        return f"SumTree(capacity={self.capacity}, total={self._total():.4f}, size={self.size})"
+    # ── Properties ────────────────────────────────────────────────────────────
 
-    # ── Internal helpers ─────────────────────────────────────────────────────
-
-    def _propagate(self, idx: int) -> None:
-        """Propagate priority change from leaf up to root."""
-        while idx > 0:
-            idx = (idx - 1) // 2
-            left = 2 * idx + 1
-            right = 2 * idx + 2
-            self.tree[idx] = self.tree[left] + self.tree[right]
-
-    def _retrieve(self, idx: int, p: float) -> int:
-        """Walk down the tree to find the leaf containing position p."""
-        left = 2 * idx + 1
-        right = 2 * idx + 2
-        if left >= len(self.tree):
-            return idx
-        if self.tree[left] + self.tree[right] == 0:
-            return left  # degenerate case
-        if p < self.tree[left]:
-            return self._retrieve(left, p)
-        else:
-            return self._retrieve(right, p - self.tree[left])
-
-    # Add size tracking
     @property
     def size(self) -> int:
         return self._size
@@ -116,6 +95,36 @@ class SumTree:
     @size.setter
     def size(self, val: int) -> None:
         self._size = val
+
+    def _total(self) -> float:
+        return self._tree[1]
+
+    def __repr__(self):
+        return (f"SumTree(capacity={self.capacity}, padded={self._padded}, "
+                f"total={self._tree[1]:.4f}, size={self._size})")
+
+    # ── Internal helpers ─────────────────────────────────────────────────────
+
+    def _propagate(self, idx: int) -> None:
+        """Propagate a leaf change up to the root."""
+        while idx > 1:
+            idx //= 2
+            self._tree[idx] = self._tree[2 * idx] + self._tree[2 * idx + 1]
+
+    def _find(self, idx: int, p: float) -> int:
+        """Walk down from internal node idx to the leaf containing priority p.
+
+        At each internal node, go left if p falls in the left subtree,
+        otherwise subtract left's sum and go right.
+        """
+        while idx < self._offset:
+            left = 2 * idx
+            if p < self._tree[left]:
+                idx = left
+            else:
+                p -= self._tree[left]
+                idx = left + 1
+        return idx
 
 
 # ─────────────────────────────────────────────────────────────────────────────
