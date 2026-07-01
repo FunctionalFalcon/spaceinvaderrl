@@ -425,7 +425,7 @@ def main() -> int:
 			writer.writerow([
 				"step", "wall_time_s",
 				"loss", "mean_q", "max_q", "min_q",
-				"eps", "last_ep_R", "mean_ep_R", "episodes",
+				"exploration", "last_ep_R", "mean_ep_R", "episodes",
 				"buffer_size", "steps_per_s",
 			])
 
@@ -503,7 +503,7 @@ def main() -> int:
 								"" if last_metrics is None else f"{last_metrics['mean_q']:.4f}",
 								"" if last_metrics is None else f"{last_metrics['max_q']:.4f}",
 								"" if last_metrics is None else f"{last_metrics['min_q']:.4f}",
-								f"{eps:.4f}",
+								"" if args.use_legacy_network else "noisy",
 								f"{episode_reward:.2f}",
 								f"{mean_ep_r:.2f}",
 								episode_count,
