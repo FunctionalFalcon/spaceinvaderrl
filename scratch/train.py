@@ -158,6 +158,8 @@ def parse_args() -> argparse.Namespace:
 				 help="Use QNetworkLegacy (standard DQN) instead of Dueling+Noisy.")
 	p.add_argument("--use-uniform-buffer", action="store_true",
 				 help="Use uniform ReplayBuffer instead of PrioritizedReplayBuffer.")
+	p.add_argument("--fresh", action="store_true",
+				 help="Force a clean start: ignores any checkpoint in --resume path.")
 	return p.parse_args()
 
 
@@ -170,7 +172,7 @@ def set_seed(seed: int) -> None:
 		torch.cuda.manual_seed_all(seed)
 
 
-def maybe_resume(path, q_online, q_target, optimizer, device):
+def maybe_resume(path, q_online, q_target, optimizer, device, fresh=False):
 	"""Load a checkpoint if given. Returns (start_step, hp).
 
 	start_step is 1 for fresh training, ckpt['step']+1 for resumed.
@@ -191,7 +193,12 @@ def maybe_resume(path, q_online, q_target, optimizer, device):
 	- anything else: treated as a path. Relative paths resolve against
 	  _PROJECT_ROOT (so `--resume runs/dqn_scratch_step_5000000.pt` works
 	  from any CWD).
+
+	`fresh=True` skips any checkpoint and forces a clean start.
 	"""
+	if fresh:
+		print("[resume] --fresh set; ignoring checkpoints and starting fresh.")
+		return 1, Hyperparameters()
 	if path is None:
 		return 1, Hyperparameters()
 
@@ -352,7 +359,7 @@ def main() -> int:
 	q_target.to(device)
 	optimizer = torch.optim.Adam(q_online.parameters(), lr=Hyperparameters.lr)
 
-	start_step, hp = maybe_resume(args.resume, q_online, q_target, optimizer, device)
+	start_step, hp = maybe_resume(args.resume, q_online, q_target, optimizer, device, fresh=args.fresh)
 
 	if args.total_steps is not None:
 		hp.total_steps = args.total_steps
@@ -474,8 +481,9 @@ def main() -> int:
 					else:
 						loss_s = "n/a"
 						q_s = "q[n/a, n/a, n/a]"
+					eps_s = f"eps {eps:.3f}" if args.use_legacy_network else "noisy"
 					print(f" step {t:>7,}/{hp.total_steps:,} | "
-						 f"eps {eps:.3f} | "
+						 f"{eps_s} | "
 						 f"loss {loss_s:>7s} | "
 						 f"{q_s} | "
 						 f"ep {episode_count:>5d} | "
