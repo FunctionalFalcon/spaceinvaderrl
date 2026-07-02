@@ -3,46 +3,42 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from scratch.network import QNetwork
 from scratch.replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
 from scratch.hyperparam import Hyperparameters
 
 
 class Agent:
-    """Agent for Dueling+Noisy DQN with Prioritized Replay."""
+    """Agent for Dueling DQN with Epsilon-greedy exploration and Prioritized Replay."""
 
     def select_action(
         self,
         state: np.ndarray,
-        q: QNetwork,
-        training: bool = True,
+        q,
+        eps: float,
+        num_actions: int,
     ) -> int:
         """
-        Select action using noisy forward pass (during training) or
-        deterministic mean weights (during evaluation).
+        Epsilon-greedy action selection.
 
-        No ε-greedy needed with Noisy Nets — exploration is handled by the
-        network's learned weight noise. During training, every forward pass
-        produces different noise, giving state-dependent exploration.
+        Exploration (random action) is cleanly separated from exploitation
+        (greedy on Q-values). This is the standard Mnih 2015 approach and
+        avoids the Noisy Nets / PER oscillation problem.
         """
+        if random.random() < eps:
+            return random.randrange(num_actions)
         q_device = next(q.parameters()).device
         with torch.no_grad():
             s = torch.as_tensor(np.array(state, dtype=np.float32), device=q_device).unsqueeze(0)
         return int(q(s).argmax(dim=1).item())
 
-    def select_action_eps(
+    def select_action_greedy(
         self,
         state: np.ndarray,
-        q: QNetwork,
-        eps: float,
-        num_actions: int,
+        q,
     ) -> int:
         """
-        Legacy ε-greedy selection. Use this for comparison runs with the
-        legacy network (QNetworkLegacy). For DuelingNoisy, use select_action().
+        Greedy (pure exploitation) action selection. Used during evaluation.
         """
-        if random.random() < eps:
-            return random.randrange(num_actions)
         q_device = next(q.parameters()).device
         with torch.no_grad():
             s = torch.as_tensor(np.array(state, dtype=np.float32), device=q_device).unsqueeze(0)
@@ -56,8 +52,8 @@ class Agent:
 
     def train_step(
         self,
-        q_online: QNetwork,
-        q_target: QNetwork,
+        q_online,
+        q_target,
         optimizer,
         buffer,
         hp: Hyperparameters,
@@ -122,10 +118,6 @@ class Agent:
         loss.backward()
         torch.nn.utils.clip_grad_norm_(q_online.parameters(), hp.max_grad_norm)
         optimizer.step()
-
-        # Reset noise after each training step (Noisy Nets only)
-        if hasattr(q_online, 'reset_noise'):
-            q_online.reset_noise()
 
         with torch.no_grad():
             q_for_log = q_pred.detach()

@@ -138,10 +138,56 @@ class QNetwork(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Dueling DQN Network (standard Linear — for use with epsilon-greedy)
+# ─────────────────────────────────────────────────────────────────────────────
+# Same Dueling architecture as QNetwork but with standard nn.Linear instead
+# of NoisyLinear. Exploration is handled by epsilon-greedy, which cleanly
+# separates exploration from the value function (unlike Noisy Nets where
+# exploration is baked into the weights and interacts badly with PER).
+#
+# Dueling aggregation: Q(s,a) = V(s) + A(s,a) - mean_a[A(s,a)]
+
+class DuelingDQN(nn.Module):
+    def __init__(self, num_actions: int):
+        super().__init__()
+        self.num_actions = num_actions
+
+        # ── Shared convolutional backbone (Mnih 2015) ──────────────────────────
+        self.conv = nn.Sequential(
+            nn.Conv2d(4, 32, kernel_size=8, stride=4), nn.ReLU(),   # → 32×20×20
+            nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),   # → 64×9×9
+            nn.Conv2d(64, 64, kernel_size=3, stride=1), nn.ReLU(),   # → 64×7×7
+        )
+        conv_out_size = 64 * 7 * 7  # 3136
+
+        hid_size = 512
+
+        # Value stream: V(s)
+        self.value_stream = nn.Sequential(
+            nn.Linear(conv_out_size, hid_size), nn.ReLU(),
+            nn.Linear(hid_size, 1),   # single scalar: V(s)
+        )
+
+        # Advantage stream: A(s,a)
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(conv_out_size, hid_size), nn.ReLU(),
+            nn.Linear(hid_size, num_actions),  # one per action
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, 4, 84, 84) float32 in [0, 1]. Returns (B, |A|)."""
+        features = self.conv(x).flatten(1)
+        v = self.value_stream(features)               # (B, 1)
+        a = self.advantage_stream(features)            # (B, num_actions)
+        q = v + a - a.mean(dim=1, keepdim=True)       # (B, num_actions)
+        return q
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Legacy QNetwork (no dueling, no noisy) — kept for compatibility / comparison
 # ─────────────────────────────────────────────────────────────────────────────
 class QNetworkLegacy(nn.Module):
-    """Standard DQN head (Linear, not NoisyLinear). For A/B testing vs DuelingNoisy."""
+    """Standard DQN head (Linear, not NoisyLinear). For A/B testing vs Dueling."""
 
     def __init__(self, num_actions: int):
         super().__init__()

@@ -2,12 +2,12 @@
 
 This is the **defense document** for the project. Read it before your teacher presentation. Every section answers a question they are likely to ask. The math is shown in LaTeX-style code blocks so it renders on GitHub and in VSCode.
 
-**Project numbers:**
-- **SB3 baseline (v0):** 300k steps CPU, 257.5 ± 104.9 eval reward, 1h6m @ 73 steps/sec
-- **Vanilla DQN (v1):** 8M steps GPU (Kaggle T4), **697 ± 232** eval reward at step 8M
-- **Rainbow v2 (current):** Dueling + ε-greedy + Prioritized Replay + Soft Target Updates, 8M steps GPU
+**Project numbers (your actual run):**
+- Training: 300,000 steps on CPU
+- **Mean eval reward: 257.5 ± 104.9** (20 episodes, deterministic)
 - Random baseline: ~100-150
-- Training time: ~60-90 min for 8M steps on Kaggle T4 GPU
+- Improvement over random: **~2×**
+- Training time: 1h 6min @ 73 steps/sec
 
 ---
 
@@ -389,12 +389,10 @@ Key properties:
 - **The noise is differentiable** — the network learns to reduce noise on important weights (σ → 0) and keep it where uncertainty is high
 - **Exploration is state-dependent** — the agent explores more in unfamiliar states (high noise) and less in familiar ones
 
-**Why it's better than ε-greedy (in theory):**
+**Why it's better than ε-greedy:**
 - ε-greedy explores uniformly across all states — it adds noise even when the policy is already good
 - Noisy nets explore more where Q-values are uncertain and less where they're confident
 - The agent never becomes fully deterministic — exploration persists throughout training
-
-**Why we switched back to ε-greedy:** In Rainbow, Noisy Nets works because it's combined with **C51 (Distributional RL)**. C51 maintains a probability distribution over returns — the noise in the value estimate gets absorbed by the distribution's spread. Scalar DQN has no such cushion. When we trained with Noisy Nets + PER for 4.7M steps, the eval score oscillated wildly (99–289) while Q-values climbed (3→160+) — a textbook case of value divergence. The root cause: Noisy Linear weights produce noisy TD errors, which PER amplifies through priority-based sampling, which produces competing policy updates. ε-greedy cleanly separates exploration from the value function. Noisy Nets is still implemented in `QNetwork` behind `--use-noisy` for comparison runs.
 
 ### 11.7 Learning from the most surprising moments (Uniform → Prioritized Replay)
 
@@ -410,7 +408,7 @@ Uniform sampling wastes batch capacity on boring transitions.
 P(i) ∝ |TD_error_i|^α
 ```
 
-Where α (default 0.4, tuned down from 0.6) controls how strongly we prioritize surprising transitions.
+Where α (default 0.6) controls how strongly we prioritize surprising transitions.
 
 **Implementation using a SumTree:** Naively computing priorities after every update is expensive. The standard approach (Schaul et al. 2015) uses a **SumTree** — a binary tree data structure that supports:
 - Sampling by priority in O(log N) time
@@ -424,14 +422,14 @@ Where α (default 0.4, tuned down from 0.6) controls how strongly we prioritize 
 
 These four techniques — DDQN, Dueling, Noisy Nets, and Prioritized Replay — are four of the six techniques in Rainbow (Hessel et al. 2017). The full Rainbow combines all six:
 
-1. **DDQN** ✓ (implemented in v1)
-2. **Dueling DQN** ✓ (implemented in v2)
-3. **ε-greedy** ✓ (implemented in v2; Noisy Nets removed — see below)
-4. **Prioritized Replay** ✓ (implemented in v2)
-5. **N-step Returns** — bootstrap over N steps instead of 1 (future work)
-6. **Categorical DQN (C51)** — learn the full distribution of returns (future work)
+1. **DDQN** ✓ (already implemented)
+2. **Dueling DQN** — separates V(s) from A(s,a)
+3. **Noisy Nets** — replaces ε-greedy
+4. **Prioritized Replay** — smart sampling by TD error
+5. **N-step Returns** — bootstrap over N steps instead of 1
+6. **Categorical DQN (C51)** — learns the full distribution of returns
 
-On Space Invaders, Rainbow achieved **~3× the score of vanilla DQN** at the same training time. Our current implementation has all four implemented techniques. Expected improvement: 1000+ eval reward (vs 697 from vanilla DQN at 8M steps).
+On Space Invaders, Rainbow achieved **~3× the score of vanilla DQN** at the same training time. Our from-scratch DQN already has DDQN. Adding Dueling is the next planned improvement.
 
 ### 11.9 No planning
 
@@ -470,25 +468,22 @@ DQN is a **reactive** policy: `a = argmax Q(s, a)`. It cannot think ahead. For g
 
 ---
 
-## 13. Hyperparameter Reference (Rainbow v2 values)
+## 13. Hyperparameter Reference (the values we actually used)
 
 | Hyperparameter | Value | Where it's set | Why |
 |---|---|---|---|
-| `learning_rate` | `1e-4` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Standard for DQN |
-| `buffer_size` | `100,000` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Larger for prioritized replay |
-| `learning_starts` | `5,000` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Fill buffer before first gradient step |
-| `batch_size` | `32` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Paper default |
-| `gamma` | `0.99` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Standard discount |
-| `target_update_tau` | `0.005` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Soft update coefficient (every step) |
-| `target_hard_reset_freq` | `1,000,000` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Hard reset every 1M steps to break drift |
-| `eps_frac` | `0.15` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Epsilon decay over first 15% (1.2M steps) |
-| `min_repeat` | `3` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | Prevents edge crashes, enough to dodge |
-| `prio_alpha` | `0.4` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | TD-error prioritization exponent (tuned from 0.6) |
-| `prio_beta` | `0.4 → 1.0` | [hyperparam.py](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/scratch/hyperparam.py) | IS correction ramps over first 75% of training |
-| `total_steps` | `8,000,000` | Notebook | 8M steps on Kaggle T4 GPU |
-| `save_freq` | `100,000` | Notebook | Checkpoint every 100k steps |
-| `eval_freq` | `100,000` | Notebook | Eval every 100k steps |
-| `eval_episodes` | `10` | Notebook | 10 greedy episodes per eval |
+| `learning_rate` | `1e-4` | [train.py:211](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Stable, slower than the paper's 2.5e-4 |
+| `buffer_size` | `20,000` | [train.py:212](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | CPU-RAM-safe; ~6.3 GB replay buffer |
+| `learning_starts` | `5,000` | [train.py:213](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Fill buffer before first gradient step |
+| `batch_size` | `32` | [train.py:214](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Paper default |
+| `gamma` | `0.99` | [train.py:215](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Standard discount |
+| `train_freq` | `4` | [train.py:216](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Train every 4 env steps (matches frame_skip) |
+| `gradient_steps` | `1` | [train.py:217](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | One update per train step |
+| `target_update_interval` | `1,000` | [train.py:218](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Frozen target for 1k steps |
+| `exploration_fraction` | `0.1` | [train.py:219](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | ε-decay over first 10% of training |
+| `exploration_final_eps` | `0.01` | [train.py:220](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Final ε = 0.01 (99% greedy) |
+| `max_grad_norm` | `10.0` | [train.py:221](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | Gradient clip (second safety net) |
+| `total_timesteps` | `300,000` | [train.py:172](../c--Users-DELL-OneDrive-Documents--1-Ky-8-AI/rel301m/SpaceInvader/train.py) | 1 hour on CPU |
 
 ---
 
@@ -517,12 +512,13 @@ DQN is a **reactive** policy: `a = argmax Q(s, a)`. It cannot think ahead. For g
 | **Huber loss** | Loss function that's quadratic for small errors and linear for large ones. Robust to outliers. |
 | **Gradient clipping** | Cap the L2 norm of the gradient to a max value (10.0 in our case). Prevents explosion. |
 | **Adam / RMSProp** | Optimizers used by DQN. Adam is the SB3 default. |
-| **NatureCNN** | The CNN architecture from Mnih 2015: 32→64→64 convs, FC 512, output |A|. Used in our SB3 baseline and from-scratch implementation. |
+| **NatureCNN** | The specific CNN architecture from Mnih 2015: 32→64→64 convs, FC 512, output |A|. |
+| **Huber / smooth_l1** | Same thing, two names. PyTorch calls it `smooth_l1_loss`. |
 | **Determinism** | At eval time, the agent picks `argmax Q(s, a)` (no ε-noise). Makes the eval number reproducible. |
 | **SPS** | Steps per second. Our CPU run hit 73 SPS. |
 | **DDQN** | Double DQN. Decouples action selection (online net) from action evaluation (target net) to reduce overestimation bias. |
 | **Dueling DQN** | Architecture that learns V(s) and A(s,a) separately, then combines them as Q = V + A − mean(A). Helps when some actions are rarely useful. |
-| **Noisy Nets** | Replaced by ε-greedy. In Rainbow, Noisy Nets works because C51 absorbs exploration noise via the return distribution. Scalar DQN has no such cushion, so Noisy Nets + PER caused eval oscillation (Q-values climbed 3→160+ while eval oscillated 100–289). |
+| **Noisy Nets** | Learns exploration noise as part of the network weights. Replaces ε-greedy with state-dependent, differentiable exploration. |
 | **Prioritized Replay** | Samples transitions from replay buffer with probability proportional to |TD error|, not uniformly. Requires importance sampling weights to correct bias. |
 | **SumTree** | Binary tree data structure used to implement prioritized replay efficiently. Supports O(log N) sampling and priority updates. |
 | **Rainbow** | Combination of six DQN improvements (DDQN, Dueling, Noisy Nets, Prioritized Replay, N-step, C51). State-of-the-art DQN as of 2017. |

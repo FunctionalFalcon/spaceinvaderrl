@@ -170,6 +170,7 @@ class PrioritizedReplayBuffer:
         beta_end: float = 1.0,
         beta_frac: float = 0.5,
         epsilon: float = 1e-6,
+        total_steps: int | None = None,
     ):
         """
         Args:
@@ -179,6 +180,8 @@ class PrioritizedReplayBuffer:
             beta: initial IS correction exponent — 0 = no correction, 1 = full correction
             beta_end: final beta after beta_frac of training steps
             epsilon: small constant added to priorities (avoids zero-probability)
+            total_steps: total training steps (for beta annealing schedule). If None,
+                         defaults to 10M (backwards-compatible for checkpoints saved without it).
         """
         self.capacity = capacity
         self.obs_shape = obs_shape
@@ -188,6 +191,7 @@ class PrioritizedReplayBuffer:
         self.beta_frac = beta_frac
         self.epsilon = epsilon
         self._step = 0  # training step counter (call `update_beta_on_step`)
+        self._total_steps = total_steps if total_steps is not None else 10_000_000
 
         # Pre-allocate storage
         self.obs = np.zeros((capacity, *obs_shape), dtype=np.float32)
@@ -259,7 +263,7 @@ class PrioritizedReplayBuffer:
             torch.as_tensor(self.next_obs[indices]),
             torch.as_tensor(self.dones[indices]),
             torch.as_tensor(is_weights),
-            indices.astype(np.int64),
+            tree_indices.astype(np.int64),  # was: indices — tree.indices are SumTree leaf nodes
         )
 
     def update_priorities(
@@ -283,8 +287,8 @@ class PrioritizedReplayBuffer:
         self._step = step
 
     def _current_beta(self) -> float:
-        """Linear schedule from beta to beta_end over first beta_frac of steps."""
-        frac = min(1.0, self._step / max(1, int(self.beta_frac * 10_000_000)))
+        """Linear schedule from beta to beta_end over first beta_frac of training steps."""
+        frac = min(1.0, self._step / max(1, int(self.beta_frac * self._total_steps)))
         return self.beta + (self.beta_end - self.beta) * frac
 
     def __repr__(self) -> str:

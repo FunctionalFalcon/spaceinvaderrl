@@ -150,7 +150,6 @@ def env_fixed(env_id: str = "ALE/SpaceInvaders-v5",
     )
     # MAR raps the env so it operates on agent-decisions
     # not the post-4x frame-skip macro-actions.
-    env = MinActionRepeat(env, min_repeat = min_repeat)
     env = AtariPreprocessing(
        env,
        frame_skip = 4,
@@ -159,6 +158,9 @@ def env_fixed(env_id: str = "ALE/SpaceInvaders-v5",
        scale_obs = True,
        terminal_on_life_loss = False,
     )
+    # MinActionRepeat is placed OUTSIDE AtariPreprocessing so it holds each
+    # action for min_repeat *agent decisions* (outer steps), not raw frames.
+    env = MinActionRepeat(env, min_repeat = min_repeat)
     env = _frame_stack(env, 4)
     if seed is not None:
        env.action_space.seed(seed)

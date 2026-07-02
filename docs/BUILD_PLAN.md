@@ -16,7 +16,7 @@ Teacher rejected SB3. You're rebuilding DQN from scratch in PyTorch. You will ty
 **Targets:**
 
 - Same `preprocessing.py` (unchanged), same `record_*.py` (unchanged), same `play.py` (unchanged but see note below).
-- New `dqn/` package with 5 files: `network.py`, `replay_buffer.py`, `agent.py`, `train.py`, `evaluate.py`.
+- New `scratch/` package with 5 files: `network.py`, `replay_buffer.py`, `agent.py`, `train.py`, `evaluate.py`.
 - Training: 1.2M steps on GPU, target eval reward ≥ 250 (SB3 baseline was 257.5 ± 104.9).
 - Run on Kaggle T4. ~12h wall-clock.
 
@@ -26,7 +26,7 @@ Teacher rejected SB3. You're rebuilding DQN from scratch in PyTorch. You will ty
 
 ## Part A — Build plan
 
-### File 1: `dqn/network.py` — QNetwork (NatureCNN)
+### File 1: `scratch/network.py` — QNetwork (NatureCNN)
 
 **What to type:** A `QNetwork(nn.Module)` with 3 conv layers + 2 FC layers. ReLU after every layer except the last. Reference: `docs/pytorch_from_scratch.md` §2. Full pseudocode in this file's "Module 1" section from the previous chat turn.
 
@@ -51,7 +51,7 @@ print(sum(p.numel() for p in m.parameters()))  # 1,686,758
 
 ---
 
-### File 2: `dqn/replay_buffer.py` — ReplayBuffer
+### File 2: `scratch/replay_buffer.py` — ReplayBuffer
 
 **What to type:** A ring buffer with 5 pre-allocated numpy arrays (`obs`, `next_obs`, `actions`, `rewards`, `dones`) and two pointers (`idx`, `size`). Reference: `docs/pytorch_from_scratch.md` §3.
 
@@ -75,7 +75,7 @@ assert d.dtype == torch.float32
 
 ---
 
-### File 3: `dqn/agent.py` — three functions
+### File 3: `scratch/agent.py` — three functions
 
 Three small functions in one file:
 
@@ -112,7 +112,7 @@ assert epsilon_at(500, hp) == pytest.approx(0.01, abs=1e-6)
 
 ---
 
-### File 4: `dqn/train.py` — main entry point
+### File 4: `scratch/train.py` — main entry point
 
 This ties it all together. Reference: `docs/pytorch_from_scratch.md` §5.
 
@@ -144,24 +144,30 @@ This ties it all together. Reference: `docs/pytorch_from_scratch.md` §5.
 ```python
 @dataclass
 class Hyperparameters:
-    env_id:          str   = "ALE/SpaceInvaders-v5"
-    seed:            int   = 0
-    total_steps:     int   = 1_200_000
-    buffer_size:     int   = 20_000
-    learning_starts: int   = 5_000
-    batch_size:      int   = 32
-    gamma:           float = 0.99
-    lr:              float = 1e-4
-    target_update:   int   = 1_000
-    save_freq:       int   = 50_000
-    eval_freq:       int   = 50_000
-    eval_episodes:   int   = 5
-    eps_start:       float = 1.0
-    eps_end:         float = 0.01
-    eps_frac:        float = 0.15         # ← improvement C: 10% → 15%
-    max_grad_norm:   float = 10.0
-    min_repeat:      int   = 2            # ← improvement A: 4 → 2
-    device:          str   = "cuda"
+    env_id:              str   = "ALE/SpaceInvaders-v5"
+    seed:                int   = 0
+    total_steps:         int   = 8_000_000
+    buffer_size:         int   = 100_000
+    learning_starts:     int   = 5_000
+    batch_size:          int   = 32
+    gamma:               float = 0.99
+    lr:                  float = 1e-4
+    target_update_tau:   float = 0.005      # soft update coefficient
+    target_hard_reset_freq: int = 1_000_000 # hard copy every 1M steps
+    save_freq:           int   = 100_000
+    eval_freq:           int   = 100_000
+    eval_episodes:       int   = 10
+    eps_start:           float = 1.0
+    eps_end:             float = 0.01
+    eps_frac:            float = 0.15      # decays over first 15% = 1.2M steps
+    max_grad_norm:       float = 10.0
+    min_repeat:          int   = 3         # 2 was too jittery, 4 too sluggish
+    device:              str   = "cuda"
+    prio_alpha:          float = 0.4
+    prio_beta:           float = 0.4
+    prio_beta_end:       float = 1.0
+    prio_beta_frac:      float = 0.75
+    use_prioritized:     bool  = True
 ```
 
 **What NOT to do:**
@@ -175,14 +181,14 @@ class Hyperparameters:
 **Smoke test (short run, ~5 min):**
 
 ```bash
-python -m dqn.train --total_steps 5000 --save_freq 5000 --eval_freq 5000
+python -m scratch.train --total_steps 5000 --save_freq 5000 --eval_freq 5000
 # Expected: 1 checkpoint saved, eval.csv has 1 row, mean reward ~100-150
 # Loss should be in range 0.5-5.0, no NaNs.
 ```
 
 ---
 
-### File 5: `dqn/evaluate.py` — greedy evaluation
+### File 5: `scratch/evaluate.py` — greedy evaluation
 
 **What to type:**
 
@@ -200,7 +206,7 @@ python -m dqn.train --total_steps 5000 --save_freq 5000 --eval_freq 5000
 **Smoke test (after a partial training run):**
 
 ```bash
-python -m dqn.evaluate --checkpoint runs/dqn_scratch_step_50000.pt --episodes 5
+python -m scratch.evaluate --checkpoint runs/dqn_scratch_step_50000.pt --episodes 5
 # Expected: mean reward in 100-200 range for an undertrained agent
 ```
 
@@ -214,11 +220,11 @@ Add a `--framework scratch` flag. When set, load the torch checkpoint directly i
 
 ## Build order summary
 
-1. `dqn/network.py` — type, smoke test, move on.
-2. `dqn/replay_buffer.py` — type, smoke test, move on.
-3. `dqn/agent.py` — type, smoke test all three functions, move on.
-4. `dqn/train.py` — type, do a 5k-step smoke run on Kaggle, then start the 1.2M-step run.
-5. `dqn/evaluate.py` — type, run on the final checkpoint.
+1. `scratch/network.py` — type, smoke test, move on.
+2. `scratch/replay_buffer.py` — type, smoke test, move on.
+3. `scratch/agent.py` — type, smoke test all three functions, move on.
+4. `scratch/train.py` — type, do a 5k-step smoke run on Kaggle, then start the 1.2M-step run.
+5. `scratch/evaluate.py` — type, run on the final checkpoint.
 6. `record_trained.py` — add the `--framework scratch` branch.
 
 **Rule of thumb:** if a smoke test fails, fix it before writing the next file. Don't stack bugs.
@@ -246,11 +252,11 @@ Be able to answer all 10 before showing the code to the teacher. The answers are
 
 End-to-end on Kaggle:
 
-1. **Smoke (5 min):** `python -c "from dqn.network import QNetwork; ..."` — shapes correct, ~1.7M params.
+1. **Smoke (5 min):** `python -c "from scratch.network import DuelingDQN; ..."` — shapes correct, ~1.7M params.
 2. **Buffer (1 min):** push 50 random, sample 4, check dtypes.
-3. **Short run (10 min):** `python -m dqn.train --total_steps 10_000`. Confirm loss in 0.5-5.0 range, no NaNs, eval.csv row exists.
-4. **Full run (12 hours on T4):** 1.2M steps. Watch `runs/dqn_scratch_eval.csv` — eval reward should climb from ~100 → 250+ by step 600k, then plateau.
-5. **Final eval:** `python -m dqn.evaluate --checkpoint runs/dqn_scratch_final.pt --episodes 20`. Target: mean ≥ 250, std ≤ 150.
+3. **Short run (10 min):** `python -m scratch.train --total_steps 10_000`. Confirm loss in 0.5-5.0 range, no NaNs, eval.csv row exists.
+4. **Full run:** 8M steps. Watch `runs/dqn_scratch_eval.csv` — eval reward should climb from ~100 → 300+ and stay stable (no oscillation).
+5. **Final eval:** `python -m scratch.evaluate --checkpoint runs/dqn_scratch_final.pt --episodes 20`. Target: mean ≥ 304.2, std ≤ 150.
 6. **Video:** `python record_trained.py --checkpoint runs/dqn_scratch_final.pt --framework scratch`. Confirm agent moves smoothly, shoots, dodges.
 
 If eval mean is < 200 after 1.2M steps, the most likely culprits (in order):
@@ -264,11 +270,12 @@ If eval mean is < 200 after 1.2M steps, the most likely culprits (in order):
 
 ## Out of scope for v1 (mention as future work in the report)
 
-- Double DQN (1-line change: use `q_online` for argmax, `q_target` for value)
-- Dueling networks (architectural change to head)
-- Prioritized experience replay (~100 lines)
-- Noisy networks (replaces ε-greedy)
+- Double DQN — done ✓
+- Dueling networks — done ✓ (DuelingDQN class)
+- Prioritized experience replay — done ✓
+- Noisy networks — implemented but switched off (causes oscillation with PER without C51)
 - n-step returns (generalizes 1-step TD target)
+- Categorical DQN (C51) — the missing piece that makes Noisy Nets stable in Rainbow
 
 ---
 
@@ -287,17 +294,17 @@ We are rebuilding the paper's algorithm in PyTorch. We have made a small number 
 
 ## Changes vs. paper (and the SB3 baseline)
 
-### Change 1: `min_repeat = 2` (was 4 in our SB3 run, was N/A in paper)
+### Change 1: `min_repeat = 3` (was 4 in our SB3 run, was N/A in paper)
 
-**What:** The `MinActionRepeat` wrapper in `preprocessing.py` was set to `min_repeat=4` in our SB3 run. We are reducing to `min_repeat=2` for the from-scratch version.
+**What:** The `MinActionRepeat` wrapper in `preprocessing.py` was set to `min_repeat=4` in our SB3 run. We use `min_repeat=3` for the from-scratch version.
 
 **Why:** With `min_repeat=4`, each action persists for ~666ms (4 agent-frames × 4 env-frames × ~42ms per env frame). For a 60Hz game this is sluggish. The video evaluation showed the agent jiggling at edges and standing awkwardly — both symptoms of a policy that cannot change direction quickly enough to dodge.
 
-**Paper:** N/A. The paper's ALE wrapper has no such concept. They use the default AtariPreprocessing with `frame_skip=4`, which gives 4 env-frames per action. The discrepancy with our run is that we _also_ added sticky actions (`repeat_action_probability=0.25`) and a MinActionRepeat wrapper, both for compatibility with the SB3 default.
+**Paper:** N/A. The paper's ALE wrapper has no such concept. They use default AtariPreprocessing with `frame_skip=4`, which gives 4 env-frames per action. The discrepancy with our run is that we _also_ added sticky actions (`repeat_action_probability=0.25`) and a `MinActionRepeat` wrapper, both for compatibility with the SB3 default.
 
-**Expected impact:** Better. Higher `min_repeat` means the agent cannot respond to bullets fast enough. Lower `min_repeat` lets the policy be more reactive. We expect the visual quality of the demo to improve noticeably; the eval reward may go up slightly but it's primarily a UX fix.
+**Expected impact:** Better. Higher `min_repeat` means the agent cannot respond to bullets fast enough. Lower `min_repeat` lets the policy be more reactive. 3 is a compromise — enough commitment to prevent edge crashes, fast enough to dodge.
 
-**Tradeoff:** Too low a `min_repeat` (e.g. 1) lets the agent micro-jitter and never commits to a movement direction. 2 is the sweet spot for Space Invaders — long enough to commit, short enough to dodge.
+**Tradeoff:** `min_repeat=2` risks edge crashes (agent zigzags to screen edge before committing). `min_repeat=4` is too sluggish for dodging fast beams. 3 is the sweet spot.
 
 ---
 
@@ -329,17 +336,15 @@ We are rebuilding the paper's algorithm in PyTorch. We have made a small number 
 
 ---
 
-### Change 4: `target_update = 1000` (matches paper)
+### Change 4: `target_update_tau = 0.005` (soft updates + periodic hard reset)
 
-**What:** Copy online weights to target every 1000 environment steps.
+**What:** Instead of hard-copying online weights to target every N steps, we apply a soft update every training step: `θ_target = τ·θ_online + (1-τ)·θ_target` with τ=0.005. Additionally, a full hard-copy reset fires every 1M steps to break any value drift cycle.
 
-**Why / Why not change:** The paper uses 10000. SB3's default is 10000. Our SB3 baseline used 10000. The from-scratch version is using 1000 to converge faster — at the cost of less stable targets.
+**Why soft updates over hard copy:** Hard copies every 10K steps create sudden jumps in the target value, which can destabilize training. Soft updates with τ=0.005 make the target track the online net smoothly — the target is always "slightly behind" without sharp discontinuities. This is the DDPG/LunarLander style update, proven stable over long training runs.
 
-**The reasoning behind 1000 over 10000:** Target network stability is most important in early training when Q-values are moving rapidly. After ~100k steps the Q-network is relatively stable, so target updates every 1000 vs 10000 have similar effect. The advantage of more frequent updates is faster propagation of learning, which matters when the total budget is 1.2M steps.
+**Why periodic hard reset:** Even with soft updates, Q-values can drift upward over millions of steps (the online net always chases its own predictions). A hard reset every 1M steps fully breaks the drift cycle and anchors the target to the current policy.
 
-**Expected impact:** Slightly faster convergence, marginally less stable mid-training. The 10× more frequent updates mean the target is always "slightly behind" the online net, which is the _intended_ effect. Going to 100 (or fewer) would make the two networks too coupled and you'd lose the stability benefit; going to 10000 is the paper default and would converge a bit slower.
-
-**Tradeoff:** 1000 is on the aggressive end. 500 would also work. 100 or less would defeat the purpose.
+**Expected impact:** More stable training, no eval oscillation, no Q-value runaway. Target: smooth eval curve without the ~100-300 oscillation seen with hard-copy + Noisy Nets.
 
 ---
 
@@ -430,12 +435,14 @@ These three together are part of **Rainbow** (Hessel et al. 2017) which is the c
 
 ## Summary
 
-We changed exactly 4 things vs. the paper + our SB3 baseline:
+We changed the following vs. the paper + our SB3 baseline:
 
-- `min_repeat`: 4 → 2 (UX fix)
+- `min_repeat`: 4 → 3 (UX fix)
 - `eps_frac`: 0.10 → 0.15 (more exploration)
 - `device`: cpu → cuda (speed)
-- `target_update`: 10000 → 1000 (faster convergence at slight stability cost)
-- `buffer_size`: 1M → 20k (memory constraint)
+- `target_update`: hard every 10K → soft tau=0.005 + hard reset every 1M
+- `buffer_size`: 1M → 100k
+- `total_steps`: 300k → 8M
+- Added: DuelingDQN architecture, Double DQN, PER, soft target updates
 
-Everything else matches either Mnih 2015 or our SB3 baseline. The eval target (≥ 250 reward) is identical to our SB3 result. The wall-clock target is 12h on T4 GPU (vs. 1h6m for 300k steps on CPU, scaled up to 1.2M = ~4-5h on CPU).
+Everything else matches either Mnih 2015 or our SB3 baseline. The eval target (≥ 304.2 reward to beat SB3 baseline) is the goal for the 8M-step run.

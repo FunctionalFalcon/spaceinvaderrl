@@ -29,17 +29,17 @@ The plan file (`dqn/PLAN.md`) has the build order. This file has the *why*.
 
 ---
 
-### Change 2: `eps_frac = 0.15` (was 0.10 in paper and our SB3 run)
+### Change 2: `eps_frac = 0.15` — with ε-greedy exploration (not Noisy Nets)
 
-**What:** The ε-greedy exploration parameter decays linearly from 1.0 to 0.01 over the first 10% of training in Mnih 2015. We are using 15% of `total_steps` (180k steps for 1.2M total) before reaching 0.01.
+**What:** The ε-greedy exploration parameter decays linearly from 1.0 to 0.01 over the first 15% of training. With 8M total steps, epsilon reaches 0.01 by step ~1.2M and stays there for the remainder of training.
 
-**Why:** With a 1.2M-step budget and 10% decay (120k steps), the agent is fully greedy by step 120k. At that point, the Q-network has only seen ~120k gradient steps and the Q-values are still noisy. Locking in too early risks committing to a suboptimal policy because the noisy Q-values look optimal at this stage.
+**Why ε-greedy over Noisy Nets:** In Rainbow (Hessel et al., 2017), Noisy Nets works *because* it's combined with C51 (Distributional RL). C51 maintains a probability distribution over returns — the noise in the value estimate gets absorbed by the distribution's spread. Scalar DQN has no such cushion: the noise baked into NoisyLinear weights propagates directly into TD errors, which are then amplified through PER (prioritized sampling). This creates competing policy modes that cause the eval score to oscillate wildly (~100–300) while Q-values climb indefinitely.
 
-**Paper:** Mnih 2015 used 1M total steps and 10% decay. They report converged performance at the end of training, so the issue is not catastrophic for them — but we have 1.2M steps and a smaller step budget, so giving more exploration is a low-risk insurance policy.
+ε-greedy cleanly separates exploration from the value function. The network learns accurate Q-values; the ε schedule handles exploration. No entanglement.
 
-**Expected impact:** Neutral to slightly positive. The cost is 60k extra steps at high ε (some exploration noise), but the benefit is more reliable convergence. If the agent locks into a bad local optimum with `eps_frac=0.10`, the entire training is wasted.
+**Historical note:** We initially deployed Noisy Nets expecting the exploration benefits from Rainbow. After 4.7M steps of eval oscillation (Q-values: 3→160, eval: 99–289), the root cause was identified as the Noisy Nets / PER interaction.
 
-**Tradeoff:** Too much exploration wastes steps on random play. 15% is the lower bound; 20% would also work but starts to leave less time for exploitation.
+**Expected impact:** Stable training without the Q-value / eval divergence. The agent converges smoothly to a policy rather than oscillating.
 
 ---
 
@@ -57,17 +57,15 @@ The plan file (`dqn/PLAN.md`) has the build order. This file has the *why*.
 
 ---
 
-### Change 4: `target_update = 1000` (was 10000 in paper and our SB3 run)
+### Change 4: `target_update_tau = 0.005` (soft updates + periodic hard reset)
 
-**What:** Copy online weights to target every 1000 environment steps.
+**What:** Instead of hard-copying online weights to target every N steps, we apply a soft update every training step: `θ_target = τ·θ_online + (1-τ)·θ_target` with τ=0.005. Additionally, a full hard-copy reset fires every 1M steps to break any value drift cycle.
 
-**Why:** The paper uses 10000. SB3's default is 10000. Our SB3 baseline used 10000. The from-scratch version uses 1000 to converge faster — at the cost of less stable targets.
+**Why soft updates over hard copy:** Hard copies every 10K steps create sudden jumps in the target value, which can destabilize training. Soft updates with τ=0.005 make the target track the online net smoothly — the target is always "slightly behind" without sharp discontinuities. This is the DDPG/LunarLander style update, proven stable over long training runs.
 
-The reasoning: target network stability is most important in early training when Q-values are moving rapidly. After ~100k steps the Q-network is relatively stable, so target updates every 1000 vs 10000 have similar effect. The advantage of more frequent updates is faster propagation of learning, which matters when the total budget is 1.2M steps.
+**Why periodic hard reset:** Even with soft updates, Q-values can drift upward over millions of steps (the online net always chases its own predictions). A hard reset every 1M steps fully breaks the drift cycle and anchors the target to the current policy.
 
-**Expected impact:** Slightly faster convergence, marginally less stable mid-training. The 10× more frequent updates mean the target is always "slightly behind" the online net, which is the *intended* effect. Going to 100 (or fewer) would make the two networks too coupled and you'd lose the stability benefit; going to 10000 is the paper default and would converge a bit slower.
-
-**Tradeoff:** 1000 is on the aggressive end. 500 would also work. 100 or less would defeat the purpose.
+**Expected impact:** More stable training, no eval oscillation, no Q-value runaway. Target: smooth eval curve without the ~100-300 oscillation seen with hard-copy + Noisy Nets.
 
 ---
 
@@ -123,13 +121,13 @@ The reasoning: target network stability is most important in early training when
 
 ---
 
-### Change 10: `buffer_size = 20_000` (was 20_000 in our SB3 run, 1_000_000 in paper)
+### Change 10: `buffer_size = 100_000` (was 20_000 in our SB3 run, 1_000_000 in paper)
 
-**What:** 20k transitions vs 1M transitions.
+**What:** 100k transitions vs 20k (SB3) or 1M (paper). With prioritized replay, a larger buffer is beneficial: the priority-based sampling can draw from a wider diversity of experience.
 
-**Why smaller:** The paper's 1M buffer was tuned for the "many games, one model" setting. For a single game, 20k is sufficient — each transition gets reused 4-10× before being overwritten, and the diversity within 20k is high enough for stable training. A 1M buffer would cost 320 GB of RAM, which is not feasible on Kaggle.
+**Why larger with PER:** Unlike uniform replay where old stale transitions hurt, PER reweights by TD error — old transitions that still have high error (e.g., a high-value action never revisited) stay in the replay distribution. 100k gives enough headroom for the SumTree to maintain a useful priority distribution across training.
 
-**Tradeoff:** 20k means the agent "forgets" old experience faster. For Space Invaders this is fine because the optimal policy doesn't change much over training. For a game with non-stationary opponents, a larger buffer would help.
+**Tradeoff:** 100k means ~3 MB per array (float32), so ~15 MB total buffer. Well within GPU memory. The PER overhead (SumTree O(log N) operations) scales with buffer size, but 100k is negligible compared to the conv forward passes.
 
 ---
 
@@ -143,7 +141,7 @@ The reasoning: target network stability is most important in early training when
 - `terminal_on_life_loss = False` (matches paper).
 - `repeat_action_probability = 0.25` (matches paper).
 - `frame_skip = 4` and `frame_stack = 4` (matches paper).
-- No reward clipping (matches our SB3 baseline).
+- No reward clipping.
 
 **Improvements over Mnih 2015:**
 
@@ -151,8 +149,9 @@ We upgraded from vanilla DQN toward Rainbow (Hessel et al., 2017):
 
 1. **Double DQN (DDQN)** — online net picks action, target net provides value. Reduces overestimation bias.
 2. **Dueling networks** — V(s) + A(s,a) head instead of direct Q(s,a). Better action-value estimates.
-3. **Noisy Nets** — learned weight noise replaces ε-greedy. State-dependent exploration that never decays.
+3. **ε-greedy exploration** — standard Mnih 2015 approach with linear decay. Noisy Nets removed after causing oscillation with PER (see above).
 4. **Prioritized Replay** — smart sampling by |TD error| via SumTree. 2-5× sample efficiency improvement.
+5. **Soft target updates** — tau=0.005 per step + hard reset every 1M. Replaces hard-copy every 10K.
 
 Remaining Rainbow techniques (not yet implemented):
 - **N-step Returns** — bootstrap over N steps instead of 1.
@@ -162,26 +161,30 @@ Remaining Rainbow techniques (not yet implemented):
 
 ## Implementation details
 
-### Dueling + Noisy QNetwork
-- File: [network.py](scratch/network.py)
-- ~6.5M parameters (vs 1.7M for standard DQN)
-- All FC layers use `NoisyLinear` (Fortunato et al., 2017)
+### DuelingDQN (ε-greedy)
+- File: [network.py](scratch/network.py) — `DuelingDQN` class
+- Same NatureCNN backbone as paper, with two heads: V(s) and A(s,a)
+- Standard `nn.Linear` layers — exploration is handled by ε-greedy, not weight noise
 - Dueling aggregation: `Q = V + A - mean(A)` (Wang et al., 2016)
-- `reset_noise()` called after each training step
+- Also available: `QNetwork` class (Dueling + NoisyLinear) behind `--use-noisy` flag for comparison
 
 ### Prioritized Replay
 - File: [replay_buffer.py](scratch/replay_buffer.py)
 - `SumTree`: O(log N) prioritized sampling and priority updates
-- Priority: `P(i) ∝ |TD_error|^alpha` (alpha=0.6)
-- IS weights: `w_i ∝ (N * P(i))^(-beta)`, beta ramps from 0.4 → 1.0
+- Priority: `P(i) ∝ |TD_error|^alpha` (alpha=0.4 — tuned down from 0.6 for more stability)
+- IS weights: `w_i ∝ (N * P(i))^(-beta)`, beta ramps from 0.4 → 1.0 over first 75% of training
 - New transitions get `max_priority` so they're replayed early
 
-### Hyperparameters for v2 run
+### Hyperparameters for current run
 ```
 total_steps: 8,000,000
-buffer_size: 100,000 (larger buffer for prioritized replay)
-prio_alpha: 0.6
-prio_beta: 0.4 → 1.0 (IS correction ramps over first 50% of training)
+buffer_size: 100,000
+lr: 1e-4 (Adam)
+prio_alpha: 0.4  (less aggressive than 0.6)
+prio_beta: 0.4 → 1.0 (over first 75% of training)
+target_update_tau: 0.005 (soft update every step)
+target_hard_reset_freq: 1,000,000 (hard copy every 1M to break drift)
+eps_frac: 0.15 (epsilon decays over first 15% = 1.2M steps)
 ```
 
 ---
@@ -189,25 +192,28 @@ prio_beta: 0.4 → 1.0 (IS correction ramps over first 50% of training)
 ## Summary
 
 **Architecture changes from vanilla DQN:**
-- `QNetwork` → Dueling + Noisy (3 improvements combined)
+- `QNetworkLegacy` → `DuelingDQN` (Dueling architecture, standard Linear layers)
 - `ReplayBuffer` → `PrioritizedReplayBuffer` (SumTree-backed)
 - `agent.train_step()` → adds IS weights to loss, updates priorities
+- Target update: hard copy every 10K → soft update every step (tau=0.005) + hard reset every 1M
 
-**Hyperparameter changes:**
-- `total_steps`: 2M → 8M
-- `buffer_size`: 20k → 100k
-- `save_freq`: 50k → 100k
-- `eval_episodes`: 5 → 10
-- `min_repeat`: 4 → 3 (preserved)
-- `eps_frac`: 0.10 → 0.15 (preserved; Noisy Nets handle exploration)
-- `device`: cpu → cuda (preserved)
+**Hyperparameter changes from v1:**
+- `lr`: 2.5e-4 → 1e-4 (more stable for long runs)
+- `prio_alpha`: 0.6 → 0.4 (less aggressive prioritization)
+- `prio_beta_frac`: 0.5 → 0.75 (slower IS correction ramp)
+- `target_update_tau`: 0.005 (soft updates — no hard jump discontinuities)
+- `target_hard_reset_freq`: 1,000,000 (breaks value drift cycle)
+- `total_steps`: 8M (preserved)
+- `buffer_size`: 100k (preserved)
+- `min_repeat`: 3 (preserved)
+- `eps_frac`: 0.15 (preserved; ε-greedy, not Noisy Nets)
 
-**Previous results (vanilla DQN, 8M steps):**
-- Best eval: 697 ± 232 at step 8M
-- 2.7× the SB3 baseline
+**Previous results (Noisy Nets + PER, 8M steps):**
+- Best eval: 361 (step 7M, run cancelled)
+- Problem: eval oscillated 99–289 while Q-values climbed 3→160+
+- Root cause: Noisy Nets + PER without C51 — exploration noise amplified through prioritized sampling
 
-**Expected with Rainbow-level improvements:**
-- 2-5× sample efficiency from Prioritized Replay
-- Better exploration throughout training from Noisy Nets
-- More accurate Q-values from Dueling
-- Target: 1000+ eval reward on Space Invaders
+**Expected with ε-greedy:**
+- Stable training without Q-value / eval divergence
+- Smooth convergence to a fixed policy
+- Target: ≥ 304.2 mean eval reward (beat SB3 DQN baseline)

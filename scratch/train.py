@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from scratch.network import QNetwork, QNetworkLegacy
+from scratch.network import QNetwork, DuelingDQN  # QNetwork=Dueling+Noisy, DuelingDQN=Dueling+epsilon
 from scratch.replay_buffer import PrioritizedReplayBuffer, ReplayBuffer
 from scratch.agent import Agent
 from scratch.hyperparam import Hyperparameters
@@ -151,11 +151,17 @@ def parse_args() -> argparse.Namespace:
 				 help="Override hp.auto_zip_keep. Recent step checkpoints "
 					 "kept in the zip. Default 5.")
 	p.add_argument("--prio-alpha", type=float, default=None,
-				 help="Override hp.prio_alpha. Prioritization exponent (0=uniform, 1=pure TD-error). Default 0.6.")
+				 help="Override hp.prio_alpha. Prioritization exponent (0=uniform, 1=pure TD-error). Default 0.4.")
 	p.add_argument("--prio-beta", type=float, default=None,
 				 help="Override hp.prio_beta. Initial IS weight exponent. Default 0.4.")
-	p.add_argument("--use-legacy-network", action="store_true",
-				 help="Use QNetworkLegacy (standard DQN) instead of Dueling+Noisy.")
+	p.add_argument("--lr", type=float, default=None,
+				 help="Override hp.lr. Learning rate. Default 1e-4.")
+	p.add_argument("--target-hard-reset-freq", type=int, default=None,
+				 help="Override hp.target_hard_reset_freq. Hard-copy online->target every N steps. Default 1_000_000.")
+	p.add_argument("--target-tau", type=float, default=None,
+				 help="Override hp.target_update_tau. Soft update coefficient (0=hard copy). Default 0.005.")
+	p.add_argument("--use-noisy", action="store_true",
+				 help="Use QNetwork with Noisy Nets instead of DuelingDQN. NOT recommended without C51.")
 	p.add_argument("--use-uniform-buffer", action="store_true",
 				 help="Use uniform ReplayBuffer instead of PrioritizedReplayBuffer.")
 	p.add_argument("--fresh", action="store_true",
@@ -307,14 +313,14 @@ def main() -> int:
 	metrics_csv_exists = metrics_csv.exists()
 
 	num_actions = 6
-	if args.use_legacy_network:
-		q_online = QNetworkLegacy(num_actions=num_actions)
-		q_target = QNetworkLegacy(num_actions=num_actions)
-		print("[setup] Using QNetworkLegacy (standard DQN, no dueling/noisy)")
-	else:
+	if args.use_noisy:
 		q_online = QNetwork(num_actions=num_actions)
 		q_target = QNetwork(num_actions=num_actions)
-		print("[setup] Using QNetwork (Dueling + Noisy Nets)")
+		print("[setup] Using QNetwork (Dueling + Noisy Nets) — NOT recommended, use epsilon-greedy")
+	else:
+		q_online = DuelingDQN(num_actions=num_actions)
+		q_target = DuelingDQN(num_actions=num_actions)
+		print("[setup] Using DuelingDQN (Dueling + epsilon-greedy)")
 	q_target.eval() # documents intent; NatureCNN has no dropout/BN
 
 	# Resolve device BEFORE moving networks. The optimizer holds per-
@@ -357,9 +363,8 @@ def main() -> int:
 	# (or CPU-resident if device=="cpu") from its very first .step().
 	q_online.to(device)
 	q_target.to(device)
-	optimizer = torch.optim.Adam(q_online.parameters(), lr=Hyperparameters.lr)
 
-	start_step, hp = maybe_resume(args.resume, q_online, q_target, optimizer, device, fresh=args.fresh)
+	start_step, hp = maybe_resume(args.resume, q_online, q_target, None, device, fresh=args.fresh)
 
 	if args.total_steps is not None:
 		hp.total_steps = args.total_steps
@@ -379,10 +384,18 @@ def main() -> int:
 		hp.prio_alpha = args.prio_alpha
 	if args.prio_beta is not None:
 		hp.prio_beta = args.prio_beta
-	if args.use_legacy_network:
-		hp.use_legacy_network = True
+	if args.lr is not None:
+		hp.lr = args.lr
+		print(f"[setup] LR overridden to {hp.lr}")
+	if args.target_hard_reset_freq is not None:
+		hp.target_hard_reset_freq = args.target_hard_reset_freq
+	if args.target_tau is not None:
+		hp.target_update_tau = args.target_tau
 	if args.use_uniform_buffer:
 		hp.use_prioritized = False
+
+	# Create optimizer AFTER all CLI overrides so LR is correct
+	optimizer = torch.optim.Adam(q_online.parameters(), lr=hp.lr)
 
 	set_seed(hp.seed)
 	print(f"[setup] device = {device} (requested={requested_device}, cuda_available={cuda_ok})")
@@ -393,11 +406,14 @@ def main() -> int:
 	print(f"[setup] train_freq = 4 (hardcoded to match paper)")
 	print(f"[setup] min_repeat = {hp.min_repeat} (MinActionRepeat wrapper applied via env_fixed)")
 	print(f"[setup] auto_zip_freq = {hp.auto_zip_freq:,} (rescue zip every N steps, 0=off)")
+	print(f"[setup] target_tau = {hp.target_update_tau} (soft update coeff, 0=hard copy)")
+	print(f"[setup] target_hard_reset_freq = {hp.target_hard_reset_freq:,} (0=disabled)")
 	if hp.use_prioritized:
 		print(f"[setup] prio_alpha = {hp.prio_alpha}, beta = {hp.prio_beta}→{hp.prio_beta_end} "
 			  f"(IS correction ramps over first {hp.prio_beta_frac:.0%} of training)")
 
 	env = env_fixed(seed=hp.seed, render_mode=None, min_repeat=hp.min_repeat)
+	eval_env = env_fixed(seed=hp.seed, render_mode=None, min_repeat=hp.min_repeat)
 	agent = Agent()
 	if hp.use_prioritized:
 		buffer = PrioritizedReplayBuffer(
@@ -407,6 +423,7 @@ def main() -> int:
 			beta=hp.prio_beta,
 			beta_end=hp.prio_beta_end,
 			beta_frac=hp.prio_beta_frac,
+			total_steps=hp.total_steps,
 		)
 		print(f"[setup] Using PrioritizedReplayBuffer "
 			  f"(alpha={hp.prio_alpha}, beta={hp.prio_beta}→{hp.prio_beta_end})")
@@ -448,13 +465,8 @@ def main() -> int:
 	print("\n[training] starting main loop...")
 	try:
 		for t in range(start_step, hp.total_steps + 1):
-			if args.use_legacy_network:
-				# ε-greedy for legacy QNetwork
-				eps = agent.epsilon_at(t, hp)
-				action = agent.select_action_eps(obs, q_online, eps, num_actions)
-			else:
-				# Noisy Nets handle exploration — no epsilon needed
-				action = agent.select_action(obs, q_online)
+			eps = agent.epsilon_at(t, hp)
+			action = agent.select_action(obs, q_online, eps, num_actions)
 			next_obs, reward, terminated, truncated, _ = env.step(action)
 			# IMPORTANT: only mark done on natural termination. Truncation
 			# (time-limit) still allows the bootstrap term to apply.
@@ -481,7 +493,7 @@ def main() -> int:
 					else:
 						loss_s = "n/a"
 						q_s = "q[n/a, n/a, n/a]"
-					eps_s = f"eps {eps:.3f}" if args.use_legacy_network else "noisy"
+					eps_s = f"eps {eps:.3f}"
 					print(f" step {t:>7,}/{hp.total_steps:,} | "
 						 f"{eps_s} | "
 						 f"loss {loss_s:>7s} | "
@@ -503,7 +515,7 @@ def main() -> int:
 								"" if last_metrics is None else f"{last_metrics['mean_q']:.4f}",
 								"" if last_metrics is None else f"{last_metrics['max_q']:.4f}",
 								"" if last_metrics is None else f"{last_metrics['min_q']:.4f}",
-								"" if args.use_legacy_network else "noisy",
+								f"eps_{eps:.3f}",
 								f"{episode_reward:.2f}",
 								f"{mean_ep_r:.2f}",
 								episode_count,
@@ -517,12 +529,29 @@ def main() -> int:
 
 			# Learn once we have enough samples and every train_freq steps.
 			if t >= hp.learning_starts and (t % 4 == 0):
-				last_metrics = agent.train_step(q_online, q_target, optimizer, buffer, hp, step=t)
+				# Pass training-step count (not env-step count) for beta annealing schedule
+				# t is env step; we train every 4 env steps, so t//4 = number of train_step calls
+				last_metrics = agent.train_step(q_online, q_target, optimizer, buffer, hp, step=t // 4)
 				agent.post_train_step(buffer, last_metrics)
 
-			# Refresh target net.
-			if t % hp.target_update == 0:
+			# Soft target update (DDPG/LunarLander style).
+			# q_target = tau * q_online + (1 - tau) * q_target
+			# tau=0.005 means target slowly tracks online, no sharp jumps.
+			if t >= hp.learning_starts:
+				target_state = q_target.state_dict()
+				online_state = q_online.state_dict()
+				for key in target_state:
+					target_state[key] = (
+						hp.target_update_tau * online_state[key]
+						+ (1 - hp.target_update_tau) * target_state[key]
+					)
+				q_target.load_state_dict(target_state)
+
+			# Periodic hard target reset — fully breaks value drift cycle.
+			# Fires less frequently than soft updates so it has time to take effect.
+			if hp.target_hard_reset_freq > 0 and t > hp.learning_starts and t % hp.target_hard_reset_freq == 0:
 				q_target.load_state_dict(q_online.state_dict())
+				print(f" [target_reset] hard-copied online -> target at step {t:,}")
 
 			# Periodic checkpoint.
 			if t % hp.save_freq == 0:
@@ -545,7 +574,7 @@ def main() -> int:
 
 			# Periodic greedy eval (and CSV append).
 			if t % hp.eval_freq == 0:
-				mean_r, std_r = run_greedy_eval(env, q_online, hp.eval_episodes,
+				mean_r, std_r = run_greedy_eval(eval_env, q_online, hp.eval_episodes,
 												hp.seed + 10_000, device)
 				with open(eval_csv, "a", newline="", encoding="utf-8") as f:
 					writer = csv.writer(f)
@@ -576,6 +605,7 @@ def main() -> int:
 					 f"({rescue_zip.stat().st_size / 1e6:.1f} MB)")
 	finally:
 		env.close()
+		eval_env.close()
 		# Flush + close the tee'd log handle and restore stdout. Wrapped in
 		# try/except so a logging error at shutdown never masks the real
 		# exit reason (e.g. MemoryError).
